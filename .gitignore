@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+/runs/
+real_data/
+analysis_results/
+analysis_gallery/
+synthetic_data/
+toy_data/

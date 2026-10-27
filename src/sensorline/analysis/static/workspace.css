@@ -1,0 +1,90 @@
+/* Workspace sections (Inference, Model): forms, progress, charts, outcome bars.
+   Uses the roles of dashboard.css; no new colors. */
+
+.segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--surface-2); border-radius: 8px; }
+.segmented button { min-height: 30px; padding: 4px 14px; background: transparent; border-color: transparent; color: var(--ink-2); }
+.segmented button:hover { background: transparent; border-color: transparent; color: var(--ink); }
+.segmented button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: var(--shadow), 0 0 0 1px var(--line); }
+
+.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px 16px; margin: 0 0 16px; }
+.field { display: flex; flex-direction: column; align-items: stretch; gap: 5px; min-width: 0; }
+.field > span { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.field small { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.field input, .field select { width: 100%; }
+.field.checkbox { flex-direction: row; align-items: center; gap: 8px; padding-top: 22px; }
+.field.checkbox input { width: 16px; }
+.field.wide { grid-column: span 2; }
+/* An edited value is marked on the control, with the saved value kept in its title. */
+.field.changed input, .field.changed select { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.field input:disabled, .field select:disabled { color: var(--muted); background: var(--surface-2); }
+
+.form-section { margin: 0 0 18px; }
+.form-section > h4 { margin-bottom: 10px; }
+
+.actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 16px; }
+.actions .message { color: var(--ink-2); font-size: 13px; min-width: 0; }
+.actions .message.error { color: var(--critical); }
+
+.progress { height: 8px; border-radius: 4px; background: var(--accent-wash); overflow: hidden; }
+.progress > span { display: block; height: 100%; min-width: 0; background: var(--accent); border-radius: 4px; transition: width .4s ease; }
+.progress.thin { height: 4px; margin-top: 8px; }
+.progress-meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 6px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.progress-meta strong { color: var(--ink); }
+
+/* Tiles with and without a note keep label and value on the same lines. */
+.metric { justify-content: flex-end; }
+.metric small { order: -1; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.plot { position: relative; }
+.plot svg { cursor: crosshair; }
+.plot .crosshair line { stroke: var(--axis); stroke-width: 1; }
+.plot .crosshair circle { stroke: var(--surface); stroke-width: 2; }
+.plot .marker-line { stroke: var(--ink-2); stroke-width: 1; }
+.plot .marker-text { fill: var(--ink-2); font-size: 11px; }
+.plot .dot { stroke: var(--surface); stroke-width: 2; }
+.chart-legend i.line { width: 14px; height: 2px; border-radius: 1px; }
+
+.chart-tip { position: fixed; z-index: 41; pointer-events: none; min-width: 120px; padding: 8px 10px; background: var(--ink); color: var(--plane); font-size: 12px; line-height: 1.5; border-radius: var(--radius-small); font-variant-numeric: tabular-nums; }
+.chart-tip .tip-title { display: block; opacity: .75; margin-bottom: 2px; }
+.chart-tip .tip-row { display: flex; align-items: center; gap: 8px; }
+.chart-tip .tip-row i { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+.chart-tip .tip-row strong { min-width: 48px; }
+.chart-tip .tip-row span { opacity: .8; }
+
+/* One bar of all objects: found (TP), false alarms (FP) and missed (FN).
+   A segment grows with its count; the minimum width keeps rare errors visible. */
+.outcome-bar { display: flex; gap: 2px; height: 28px; }
+.outcome-bar i { flex: 0 1 0; min-width: 6px; border-radius: 3px; }
+.outcome-bar i:hover { outline: 1.5px solid var(--ink); outline-offset: -1.5px; }
+.outcome-bar .tp, .outcome-legend .tp { background: var(--outcome-tp); }
+.outcome-bar .fp, .outcome-legend .fp { background: var(--outcome-fp); }
+.outcome-bar .fn, .outcome-legend .fn { background: var(--outcome-fn); }
+.tray-caption { margin: 12px 0 0; font-size: 13px; color: var(--ink-2); max-width: none; }
+.tray-caption strong { color: var(--ink); }
+
+.stack { min-width: 0; }
+.stack > .card:last-child { margin-bottom: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { min-height: 28px; padding: 2px 12px; border-radius: 999px; font-weight: 400; font-size: 13px; }
+.chips button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-wash); font-weight: 600; }
+.count-matrix { max-width: 520px; }
+.count-matrix rect { cursor: pointer; }
+.count-matrix rect.selected { stroke: var(--ink); stroke-width: 2; }
+.frame-detail { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.frame-detail canvas { max-width: 420px; }
+.frame-facts { margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-2); }
+.frame-facts li { padding: 4px 0; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; }
+.frame-facts li strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.box-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 0; font-size: 12px; color: var(--ink-2); }
+.box-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.box-legend i { width: 16px; height: 0; border-top: 2px solid; flex: none; }
+.box-legend i.dashed { border-top-style: dashed; }
+.path { font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; overflow-wrap: anywhere; color: var(--ink-2); }
+
+@media (max-width: 900px) {
+  .frame-detail { grid-template-columns: 1fr; }
+  .field.wide { grid-column: auto; }
+}
+/* Model section: a share of the whole as a thin bar next to its percentage. */
+.share { display: inline-block; width: 64px; height: 6px; margin-right: 6px; vertical-align: middle; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.share i { display: block; height: 100%; background: var(--series-1); }

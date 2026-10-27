@@ -1,0 +1,59 @@
+# Default run config of track.py: counting objects in a CSV recording with a
+# trained checkpoint. Every number the tracking code uses comes from here, from the
+# model passport or from the data; `auto` values are resolved at start-up and saved
+# in config.resolved.yaml of the run.
+model:
+  device: auto              # auto, cpu or cuda
+  # Windows per forward pass of an offline run. 1 gives results identical bit for bit
+  # to streaming. More is about twice as fast on a CPU, but the convolutions of a
+  # batch round differently: scores move by ~1e-7, which changes a decision only for a
+  # score that close to a threshold.
+  batch_windows: 1
+  score_thr: auto           # τ; auto = evaluation.confidence of the checkpoint
+  nms_iou: auto             # auto = evaluation.nms_iou of the checkpoint
+  nms_iou_max: 0.3          # neighbouring objects overlap with IoU 0.1-0.2
+
+data:
+  delimiter: auto           # auto or one character
+  header: auto              # auto, true or false
+  time_col: auto            # auto, null (no time column), a column name or a 0-based index
+  channel_cols: auto        # auto or a list of column names / 0-based indices, in sensor order
+  orientation: auto         # auto, rows_are_polls or rows_are_channels
+  # raw_adc: recordings of the conveyor (12-bit ADC codes at the full poll rate), turned
+  # into training-like frames by the recording transform of the model passport.
+  # pixels: values stored like the training images (8-bit pixels).
+  input_kind: raw_adc
+  gap_factor: 3.0           # a time step larger than gap_factor × median step starts a new segment
+  chunk_rows: 4096          # rows read at a time
+  time_unit_s: null         # seconds per unit of the time column (for sample_rate_hz: auto)
+  # Polls per second of the recording; auto = from time_col and time_unit_s. The model
+  # sees samples at the rate of its training recordings (10 polls of 200 Hz = 20 Hz);
+  # any poll rate is averaged down to that, with fractional weights if needed.
+  sample_rate_hz: 200
+  # Simulate a slower poll rate: average every `pool` rows into one poll first
+  # (pool 2 = 100 Hz, pool 3 = 66.7 Hz for a 200 Hz recording).
+  pool: 1
+
+windows:
+  stride: auto              # S; auto = min(W // 2, W - L_max - margin)
+  lmax_quantile: 0.99       # L_max = this quantile of training box lengths in time
+  margin: 2                 # samples
+  tail_mode: align_end      # align_end or pad_background
+  # raw_adc only: a window whose peak (ADC units above the window median) is below this
+  # fraction of the weakest training frame is empty and is not given to the model.
+  # Conveyor recordings: noise peaks 10-80, objects from about 150, weakest frame 233.
+  empty_peak: 0.5
+
+tracker:
+  match_iou: 0.3            # σ
+  match_mode: overlap_clipped   # overlap_clipped, plain_iou or iomin
+  min_hits: 2               # n_min
+  strong_score: auto        # τ_high; auto = min(τ + strong_score_margin, 1)
+  strong_score_margin: 0.2
+  edge_tol: 1               # samples: a box this close to a window edge is cut
+  dedup_iou: 0.5
+  count_on: close           # close (offline) or confirm (streaming, lower latency)
+
+output:
+  runs_root: ../../runs/tracking   # relative to this file
+  save_frames: false            # attach window frames to WindowResult (the live screen turns it on)

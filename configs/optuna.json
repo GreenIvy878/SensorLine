@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "study_name": "sensorline_bbox_f1_aug",
+  "output_dir": "../runs/optuna_bbox_f1_aug",
+  "n_trials": 50,
+  "sampler_seed": 17,
+  "objective": {
+    "metric": "f1",
+    "direction": "maximize"
+  },
+  "parameters": {
+    "training.learning_rate": {
+      "type": "float",
+      "low": 0.0001,
+      "high": 0.003,
+      "log": true
+    },
+    "training.weight_decay": {
+      "type": "float",
+      "low": 1e-06,
+      "high": 0.01,
+      "log": true
+    },
+    "training.batch_size": {
+      "type": "categorical",
+      "choices": [
+        16,
+        32,
+        64
+      ]
+    },
+    "training.optimizer": {
+      "type": "categorical",
+      "choices": [
+        "adamw",
+        "adam",
+        "sgd"
+      ]
+    },
+    "training.momentum": {
+      "type": "float",
+      "low": 0.8,
+      "high": 0.98
+    },
+    "training.gradient_clip": {
+      "type": "float",
+      "low": 1,
+      "high": 10
+    },
+    "loss.bbox": {
+      "type": "categorical",
+      "choices": [
+        "ciou",
+        "diou",
+        "giou"
+      ]
+    },
+    "loss.bbox_weight": {
+      "type": "float",
+      "low": 2,
+      "high": 10
+    },
+    "loss.objectness_weight": {
+      "type": "float",
+      "low": 0.5,
+      "high": 2
+    },
+    "loss.negative_weight": {
+      "type": "float",
+      "low": 0.5,
+      "high": 3
+    },
+    "loss.hard_negative_ratio": {
+      "type": "categorical",
+      "choices": [
+        0,
+        10,
+        20,
+        40
+      ]
+    },
+    "training.augmentation.probability": {
+      "type": "float",
+      "low": 0.5,
+      "high": 0.9
+    },
+    "training.augmentation.sensor_flip_probability": {
+      "type": "float",
+      "low": 0.1,
+      "high": 0.5
+    },
+    "training.augmentation.gain_limit": {
+      "type": "float",
+      "low": 0,
+      "high": 0.15
+    },
+    "training.augmentation.noise_std": {
+      "type": "float",
+      "low": 0.002,
+      "high": 0.008
+    },
+    "training.augmentation.sensor_shift": {
+      "type": "int",
+      "low": 0,
+      "high": 2
+    },
+    "training.augmentation.time_shift": {
+      "type": "int",
+      "low": 0,
+      "high": 3
+    },
+    "training.augmentation.time_flip_probability": {
+      "type": "float",
+      "low": 0,
+      "high": 0.5
+    },
+    "training.augmentation.rotation_probability": {
+      "type": "float",
+      "low": 0.2,
+      "high": 0.5
+    },
+    "training.augmentation.rotation_degrees": {
+      "type": "float",
+      "low": 10,
+      "high": 30
+    },
+    "training.augmentation.shear_probability": {
+      "type": "float",
+      "low": 0.1,
+      "high": 0.5
+    },
+    "training.augmentation.shear_limit": {
+      "type": "float",
+      "low": 0.05,
+      "high": 0.15
+    }
+  }
+}

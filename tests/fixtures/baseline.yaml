@@ -1,0 +1,67 @@
+# A configuration for the tests only. It lives outside configs/ because it is not
+# a model of the series. Its content repeats theory_00_control; paths are relative
+# to this file.
+data:
+  type: yolo_images
+  train: ../../real_data/train
+  val: ../../real_data/val
+  sensor_axis: x
+  scale: 255.0
+  offset: 0.0
+
+model:
+  backbone:
+    - {type: conv, channels: 16, kernel: [3, 3]}
+    - {type: residual, channels: 24, kernel: [3, 3]}
+    - {type: residual, channels: 32, kernel: [3, 3]}
+    - {type: depthwise, channels: 32, kernel: [9, 3]}
+    - {type: depthwise, channels: 32, kernel: [3, 15]}
+    - {type: depthwise, channels: 32, kernel: [9, 13]}
+    - {type: residual, channels: 32, kernel: [3, 3]}
+  neck: {type: none}
+  head: {type: bbox}
+
+loss:
+  bbox: ciou
+  bbox_weight: 5.0
+  objectness_weight: 1.0
+  negative_weight: 1.0
+  objectness: focal
+  focal_gamma: 1.0
+  focal_alpha: -1
+  hard_negative_ratio: 0
+
+training:
+  batch_size: 32
+  epochs: 100
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  device: auto
+  seed: 17
+  num_workers: 0
+  output_dir: ../../runs/test_baseline
+  gradient_clip: 5.0
+  cpu_threads: 4
+
+  augmentation:
+    enabled: true
+    probability: 0.8
+    sensor_flip_probability: 0.5
+    time_flip_probability: 0.5
+    rotation_probability: 0.3
+    rotation_degrees: 5.0
+    shear_probability: 0.3
+    shear_limit: 0.10
+    gain_limit: 0.10
+    noise_std: 0.004
+    sensor_shift: 1
+    time_shift: 2
+
+evaluation:
+  confidence: 0.55
+  ap_min_confidence: 0.01
+  nms_iou: 0.3
+  match_iou: 0.3
+  max_detections: 100
+  pre_nms_topk: 300

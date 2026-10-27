@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SensorLine dashboard</title>
+<script>
+/* Apply a saved theme before first paint; without one the OS setting decides. */
+try { const saved = localStorage.getItem('sensorline-theme'); if (saved) document.documentElement.dataset.theme = saved; } catch (error) {}
+</script>
+<link rel="stylesheet" href="/dashboard.css">
+<link rel="stylesheet" href="/workspace.css">
+</head>
+<body data-view="dataset">
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><h1>SensorLine <span>Dashboard</span></h1></div>
+  <div class="status" data-state="idle"><span class="status-dot" aria-hidden="true"></span><span id="status" role="status">Connecting…</span></div>
+  <button id="theme" type="button" class="quiet" aria-label="Switch between light and dark theme">Theme</button>
+</header>
+<div class="layout">
+  <nav id="nav" aria-label="Sections"></nav>
+  <div class="workspace">
+    <div class="toolbar" data-for="dataset" aria-label="Dataset analysis controls">
+      <label>Population
+        <select id="scope"><option value="train">Train</option><option value="val">Validation</option><option value="all">Train + Validation</option></select>
+      </label>
+      <span class="toolbar-spacer"></span>
+      <button id="run" class="primary">Run analysis</button>
+      <button id="refresh" title="Recompute even if the cached result matches the data">Recompute</button>
+      <a class="button" href="/analysis.json" id="export" title="All populations, as JSON">Export JSON</a>
+    </div>
+    <main id="content" tabindex="-1"><p>Analysis is loading.</p></main>
+  </div>
+</div>
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+<script src="/dashboard.js" defer></script>
+<script src="/experiments.js" defer></script>
+<script src="/workspace.js" defer></script>
+<script src="/inference.js" defer></script>
+<script src="/model.js" defer></script>
+</body>
+</html>

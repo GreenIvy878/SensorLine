@@ -1,0 +1,68 @@
+# Context redistributed over depth with the same parameters and RF; compare with 00.
+# All kernel/stride/dilation pairs are [sensor, time]. Full-resolution grid 40 x T.
+# How the variants are compared: ../README.md
+data:
+  type: yolo_images
+  train: ../real_data/train
+  val: ../real_data/val
+  sensor_axis: x
+  scale: 255.0
+  offset: 0.0
+
+model:
+  backbone:
+    - {type: conv, channels: 16, kernel: [3, 3]}
+    - {type: residual, channels: 24, kernel: [3, 3]}
+    - {type: residual, channels: 32, kernel: [3, 3]}
+    - {type: depthwise, channels: 32, kernel: [5, 17]}
+    - {type: depthwise, channels: 32, kernel: [7, 11]}
+    - {type: depthwise, channels: 32, kernel: [9, 3]}
+    - {type: residual, channels: 32, kernel: [3, 3]}
+  neck: {type: none}
+  head: {type: bbox}
+
+loss:
+  bbox: ciou
+  bbox_weight: 5.0
+  objectness_weight: 1.0
+  negative_weight: 1.0
+  objectness: focal
+  focal_gamma: 1.0
+  focal_alpha: -1
+  hard_negative_ratio: 0
+
+training:
+  batch_size: 32
+  epochs: 100
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  device: auto
+  seed: 17
+  num_workers: 0
+  output_dir: ../runs/theory_05_context_balance
+  gradient_clip: 5.0
+  cpu_threads: 4
+
+  # Training only: moderate signal changes; boxes follow the geometry, pixels use nearest.
+  augmentation:
+    enabled: true
+    probability: 0.8
+    sensor_flip_probability: 0.5
+    time_flip_probability: 0.5
+    rotation_probability: 0.3
+    rotation_degrees: 5.0
+    shear_probability: 0.3
+    shear_limit: 0.10
+    gain_limit: 0.10
+    noise_std: 0.004
+    sensor_shift: 1
+    time_shift: 2
+
+evaluation:
+  confidence: 0.55
+  ap_min_confidence: 0.01
+  nms_iou: 0.3
+  match_iou: 0.3
+  max_detections: 100
+  pre_nms_topk: 300

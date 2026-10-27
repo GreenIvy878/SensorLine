@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en" translate="no">
+<head>
+<meta charset="utf-8">
+<meta name="google" content="notranslate">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SensorLine Live</title>
+<script>
+/* Same theme key as the dashboard: a saved choice applies before first paint. */
+try { const saved = localStorage.getItem('sensorline-theme'); if (saved) document.documentElement.dataset.theme = saved; } catch (error) {}
+</script>
+<link rel="stylesheet" href="/live.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><h1>SensorLine <span>Live</span></h1></div>
+  <div id="title" class="title"></div>
+  <div class="status" id="run-state" data-state="idle"><span class="status-dot" aria-hidden="true"></span><span id="run-state-text" role="status">Connecting…</span></div>
+  <button id="new-run" type="button" hidden>New run</button>
+  <button id="theme" type="button" class="quiet" aria-label="Switch between light and dark theme">Theme</button>
+</header>
+
+<section id="start" class="start" hidden>
+  <div class="cards">
+    <form id="start-form" class="panel card" aria-labelledby="start-title">
+      <div class="panel-head"><h2 id="start-title">Count a recording</h2></div>
+      <label class="field">Recording (CSV)
+        <span class="pick"><input id="f-csv" list="recent-csv" autocomplete="off" spellcheck="false" placeholder="C:\…\recording.csv">
+        <button type="button" data-target="f-csv" data-kind="file" data-ext=".csv,.txt" data-title="Choose the recording">Choose…</button></span>
+      </label>
+      <label class="field">Weights (.pt)
+        <span class="pick"><input id="f-weights" list="recent-weights" autocomplete="off" spellcheck="false" placeholder="C:\…\best.pt">
+        <button type="button" data-target="f-weights" data-kind="file" data-ext=".pt" data-title="Choose the weights">Choose…</button></span>
+      </label>
+      <div class="fields-row">
+        <label class="field">Values in the CSV
+          <select id="f-input">
+            <option value="raw_adc">Raw ADC codes of the sensor line</option>
+            <option value="pixels">Pixels, stored like the training images</option>
+          </select>
+          <span class="hint">raw ADC needs the recording transform of the model's dataset</span>
+        </label>
+        <label class="field">Poll rate, Hz
+          <input id="f-rate" size="8" autocomplete="off" inputmode="decimal">
+          <span class="hint">of the recording, or auto from its time column</span>
+        </label>
+        <label class="field">Playback speed
+          <select id="f-speed">
+            <option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1">1× (real time)</option>
+            <option value="2">2×</option><option value="4">4×</option><option value="8">8×</option>
+            <option value="16">16×</option><option value="0">max</option>
+          </select>
+        </label>
+      </div>
+      <div class="form-actions"><button id="start-button" class="primary" type="submit">Start</button><span id="start-error" class="error" role="alert"></span></div>
+    </form>
+
+    <form id="open-form" class="panel card" aria-labelledby="open-title">
+      <div class="panel-head"><h2 id="open-title">Open a saved run</h2></div>
+      <p class="hint">A run folder written earlier (it holds config.resolved.yaml). It plays back without the model and its thresholds can be changed.</p>
+      <label class="field">Run folder
+        <span class="pick"><input id="f-run" list="recent-runs" autocomplete="off" spellcheck="false" placeholder="C:\…\runs\tracking\2026…">
+        <button type="button" data-target="f-run" data-kind="run" data-title="Choose a run folder">Choose…</button></span>
+      </label>
+      <div class="form-actions"><button id="open-button" class="primary" type="submit">Open</button><span id="open-error" class="error" role="alert"></span></div>
+    </form>
+  </div>
+  <datalist id="recent-csv"></datalist><datalist id="recent-weights"></datalist>
+  <datalist id="recent-runs"></datalist>
+</section>
+
+<dialog id="chooser" aria-labelledby="chooser-title">
+  <div class="chooser">
+    <div class="chooser-head">
+      <h2 id="chooser-title">Choose</h2>
+      <button id="chooser-close" type="button" class="quiet" aria-label="Close">✕</button>
+    </div>
+    <div class="chooser-path">
+      <button id="chooser-up" type="button" aria-label="Parent folder">↑</button>
+      <select id="chooser-drives" aria-label="Drive"></select>
+      <input id="chooser-path" spellcheck="false" aria-label="Folder">
+    </div>
+    <ul id="chooser-list" class="chooser-list"></ul>
+    <div class="chooser-foot">
+      <span class="hint" id="chooser-note"></span>
+      <button id="chooser-pick" type="button" class="primary" hidden>Choose this folder</button>
+    </div>
+  </div>
+</dialog>
+
+<div id="screen" hidden>
+<main>
+  <section class="panel strip-panel" aria-labelledby="strip-title">
+    <div class="panel-head">
+      <h2 id="strip-title">Signal strip</h2>
+      <div class="legend" aria-label="Legend">
+        <span><i class="key confirmed"></i>confirmed</span>
+        <span><i class="key tentative"></i>tentative</span>
+        <span><i class="key closed"></i>closed</span>
+        <span><i class="key rejected"></i>rejected</span>
+        <span><i class="key window"></i>window k</span>
+        <span><i class="key previous"></i>window k−1</span>
+      </div>
+    </div>
+    <canvas id="strip" height="300" aria-label="Signal of the last windows with tracks"></canvas>
+    <div class="strip-axis"><span id="strip-from"></span><span>time →</span><span id="strip-to"></span></div>
+  </section>
+
+  <div class="row">
+    <section class="panel" aria-labelledby="window-title">
+      <div class="panel-head"><h2 id="window-title">Window <span id="window-k">—</span></h2><span class="hint" id="window-note"></span></div>
+      <div class="window-body">
+        <canvas id="frame" width="320" height="320" aria-label="Model input of the current window with boxes"></canvas>
+        <div class="window-controls">
+          <fieldset>
+            <legend>Boxes</legend>
+            <label><input type="radio" name="stage" value="all"> all candidates</label>
+            <label><input type="radio" name="stage" value="threshold"> score ≥ τ, before NMS</label>
+            <label><input type="radio" name="stage" value="nms" checked> after NMS (detections)</label>
+          </fieldset>
+          <label class="slider">τ <output id="tau-out"></output><input id="tau" type="range" min="0.05" max="0.99" step="0.01"></label>
+          <label class="slider">NMS IoU <output id="nms-out"></output><input id="nms" type="range" min="0.05" max="0.3" step="0.01"></label>
+          <div class="hint" id="frame-counts"></div>
+          <button id="apply" type="button">Apply to the whole recording</button>
+          <div class="hint" id="apply-note"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="count-title">
+      <div class="panel-head"><h2 id="count-title">Count</h2></div>
+      <div class="counter">
+        <div><div class="big" id="count">0</div><div class="hint">counted</div></div>
+      </div>
+      <canvas id="chart" height="190" aria-label="Cumulative count over time"></canvas>
+    </section>
+
+    <section class="panel" aria-labelledby="tracks-title">
+      <div class="panel-head"><h2 id="tracks-title">Active tracks</h2><span class="hint" id="tracks-count"></span></div>
+      <div class="table-wrap">
+        <table id="tracks">
+          <thead><tr><th>id</th><th>state</th><th>hits</th><th>miss</th><th>score</th><th>t1–t2</th><th>cut</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div class="row two">
+    <section class="panel" aria-labelledby="events-title">
+      <div class="panel-head"><h2 id="events-title">Events</h2><span class="hint">click to go there</span></div>
+      <ol id="events" class="events"></ol>
+    </section>
+
+    <section class="panel controls" aria-labelledby="controls-title">
+      <div class="panel-head"><h2 id="controls-title">Controls</h2></div>
+      <div class="control-row">
+        <button id="back" type="button" aria-label="One window back">◀</button>
+        <button id="play" type="button" class="primary">Play</button>
+        <button id="forward" type="button" aria-label="One window forward">▶</button>
+        <label>Speed
+          <select id="speed">
+            <option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option>
+            <option value="2">2×</option><option value="4">4×</option><option value="8">8×</option>
+            <option value="16">16×</option><option value="0">max</option>
+          </select>
+        </label>
+        <label id="follow-label"><input id="follow" type="checkbox" checked> follow live</label>
+      </div>
+      <div class="control-row">
+        <button id="bookmark" type="button">Bookmark here</button>
+        <ol id="bookmarks" class="bookmarks"></ol>
+      </div>
+      <div class="control-row">
+        <button id="png-strip" type="button">Strip PNG</button>
+        <button id="png-window" type="button">Window PNG</button>
+        <button id="record" type="button">Record video</button>
+      </div>
+      <div class="hint">Keys: space play/pause, ← → one window.</div>
+    </section>
+  </div>
+</main>
+
+<footer class="statusbar" id="statusbar" aria-live="off"></footer>
+</div>
+<script src="/live.js"></script>
+</body>
+</html>
