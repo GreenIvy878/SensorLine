@@ -28,7 +28,9 @@ class TrainCliTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="sensorline_train_cli_")
         self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name)
+        # The full path: a temporary folder may be given by its short 8.3 name on Windows,
+        # while the runs report resolved paths.
+        self.directory = Path(self.temporary.name).resolve()
         self.config_path = self.directory / "model.yaml"
         self.output = self.directory / "runs" / "model"
         self.cli = load_cli()
