@@ -48,13 +48,15 @@ def folder_data(folder: Path, data: dict, owner="checkpoint") -> tuple[dict, str
 
 def evaluate_checkpoint(
     checkpoint: dict, path, device, data: dict, split: str, *, runtime: dict, folder=None,
-    owner="checkpoint", labeled=True, with_loss=False, progress=None,
+    owner="checkpoint", labeled=True, with_loss=False, progress=None, border_ignore=None,
 ) -> dict:
     """Run a loaded checkpoint on `data[split]`, or on `folder` when it is given.
 
     `runtime` is a training section that supplies batch_size, num_workers and seed to
-    the loader. `progress(done, total)` follows the evaluated frames. Returns the
-    report, the per-frame rows, the predictions and the dataset they come from.
+    the loader. `progress(done, total)` follows the evaluated frames. `border_ignore`, when
+    given, replaces the setting of the same name that the checkpoint was trained with
+    (see border.py): a saved model can be scored by another rule without retraining.
+    Returns the report, the per-frame rows, the predictions and the dataset they come from.
     """
     described_by = owner
     if folder is not None:
@@ -65,10 +67,13 @@ def evaluate_checkpoint(
         progress(0, len(dataset))
         loader = CountingLoader(loader, lambda done: progress(done, len(dataset)))
     saved = checkpoint["config"]
+    evaluation = saved["evaluation"]
+    if border_ignore is not None:
+        evaluation = {**evaluation, "border_ignore": border_ignore}
     model = load_model(checkpoint, device)
     criterion = DetectionLoss(saved["loss"]) if with_loss else None
     metrics, rows, predictions = evaluate(
-        model, loader, device, evaluation_settings(saved["evaluation"], data),
+        model, loader, device, evaluation_settings(evaluation, data),
         criterion=criterion, labeled=labeled,
     )
     report = {
@@ -79,7 +84,7 @@ def evaluate_checkpoint(
         "checkpoint_epoch": checkpoint["epoch"],
         "metrics": metrics,
         "dataset_fingerprint": dataset_fingerprint(dataset),
-        "evaluation": saved["evaluation"],
+        "evaluation": evaluation,
         "preprocessing": {**{key: data[key] for key in STORAGE_OPTIONS}, "source": described_by},
     }
     return {"report": report, "rows": rows, "predictions": predictions, "dataset": dataset}

@@ -35,15 +35,22 @@ def replace_file(source: str | Path, target: str | Path) -> None:
             time.sleep(REPLACE_DELAY_SECONDS)
 
 
-def write_json(path: str | Path, value, indent=2) -> None:
-    text = json.dumps(value, indent=indent, ensure_ascii=False, allow_nan=False)
+def write_text(path: str | Path, text: str, newline: str | None = None) -> None:
+    """Replace a text file in one step: a reader sees the old file or the new one, never a part.
+
+    `newline` as in open(): None writes the platform's line ends, "\\n" keeps them as given.
+    """
     path = Path(path)
     temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
     try:
-        temporary.write_text(text, encoding="utf-8")
+        temporary.write_text(text, encoding="utf-8", newline=newline)
         replace_file(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def write_json(path: str | Path, value, indent=2) -> None:
+    write_text(path, json.dumps(value, indent=indent, ensure_ascii=False, allow_nan=False))
 
 
 def read_json(path: str | Path, default=None):

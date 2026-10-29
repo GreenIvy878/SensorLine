@@ -9,14 +9,31 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "tools"))
 
-from sensorline.artifacts import write_json, write_rows
+from sensorline.artifacts import file_sha256, write_json, write_rows
 from sensorline.tracking.pipeline import track_recording
 from sensorline.tracking.settings import load_settings
-from locate_frames import unique_recordings
 
 DEFAULT_CONFIG = ROOT / "configs" / "tracking" / "default.yaml"
+
+
+def recording_order(path: Path):
+    """DATA_2 before DATA_10: by the number in the name, then by the name."""
+    digits = "".join(ch for ch in path.stem if ch.isdigit())
+    return (int(digits) if digits else 0, path.name)
+
+
+def unique_recordings(folder: Path) -> tuple[list[Path], dict]:
+    """Recordings in name order; a file identical to an earlier one is listed as its duplicate."""
+    seen, unique, duplicates = {}, [], {}
+    for path in sorted(folder.glob("*.csv"), key=recording_order):
+        digest = file_sha256(path)
+        if digest in seen:
+            duplicates[path.name] = seen[digest]
+            continue
+        seen[digest] = path.name
+        unique.append(path)
+    return unique, duplicates
 
 
 def main():

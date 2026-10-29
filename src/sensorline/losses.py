@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .border import cut_by_time_border
 from .config import BOX_LOSSES, OBJECTNESS_LOSSES, with_defaults
 
 
@@ -155,8 +156,21 @@ def objectness_loss(logits, targets, kind="bce", alpha=0.25, gamma=2.0):
     return loss
 
 
-def prepare_batch_targets(output, targets, image_width) -> dict:
-    """Prepare matching, masks and counts on CPU before batched GPU reductions."""
+def cells_under_boxes(anchors, cell_sizes, boxes):
+    """Mask of the cells that overlap any of the boxes."""
+    centers = (boxes[:, :2] + boxes[:, 2:]) / 2
+    half_sizes = (boxes[:, 2:] - boxes[:, :2]) / 2
+    reach = half_sizes[:, None] + cell_sizes[None] / 2
+    return (np.abs(anchors[None] - centers[:, None]) <= reach).all(-1).any(0)
+
+
+def prepare_batch_targets(output, targets, image_width, border=0) -> dict:
+    """Prepare matching, masks and counts on CPU before batched GPU reductions.
+
+    With `border` set, a box that the time edge of its frame cut and that is shorter than
+    `border` samples (see border.py) is no target: its cells are neither positive nor
+    negative, so that the model is not taught either answer for it.
+    """
     anchors = output["anchors"].detach().cpu().numpy()
     cells = output["cell_sizes"].detach().cpu().numpy()
     batch_size, cell_count = output["objectness"].shape
@@ -168,10 +182,17 @@ def prepare_batch_targets(output, targets, image_width) -> dict:
         time_ratio = target["size"][1] / image_width
         valid = anchors[:, 0] < time_ratio
         boxes = target["boxes"].cpu().numpy().copy()
+        cut = cut_by_time_border(boxes, target["size"][1], border) if border else None
         boxes[:, [0, 2]] *= time_ratio
+        undecided = None
+        if cut is not None and cut.any():
+            undecided = cells_under_boxes(anchors, cells, boxes[cut])
+            boxes = boxes[~cut]
         cell_indices, target_indices = assign_targets(anchors, cells, boxes, valid)
         positive[index, cell_indices] = True
         negative[index] = valid & ~positive[index]
+        if undecided is not None:
+            negative[index] &= ~undecided
         matched_cells.append(cell_indices)
         matched_boxes.append(boxes[target_indices])
 
@@ -213,6 +234,7 @@ class DetectionLoss(nn.Module):
         self.object_weight = float(options["objectness_weight"])
         self.negative_weight = float(options["negative_weight"])
         self.hard_negative_ratio = options["hard_negative_ratio"]
+        self.border_ignore = float(options["border_ignore"])
 
     def mean_negative_loss(self, objectness_losses: torch.Tensor, assigned: dict) -> torch.Tensor:
         """Mean negative objectness loss per sample, optionally focusing on likely false positives."""
@@ -237,7 +259,7 @@ class DetectionLoss(nn.Module):
         return selected_losses.sum(1) / budget.clamp_min(1)
 
     def forward(self, output, targets, image_shape) -> dict:
-        assigned = prepare_batch_targets(output, targets, image_shape[1])
+        assigned = prepare_batch_targets(output, targets, image_shape[1], self.border_ignore)
         objectness_losses = objectness_loss(
             output["objectness"], assigned["positive"], self.objectness_kind,
             self.focal_alpha, self.focal_gamma,

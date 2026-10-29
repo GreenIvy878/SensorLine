@@ -7,6 +7,14 @@ from ...artifacts import read_json
 from .experiment_analysis import artifact_signature, prepare_experiment
 from .records import discover_experiments
 
+# What only the page of one run shows (/api/experiment); the list leaves it out, since
+# the history alone is tens of kilobytes per run.
+DETAIL_ONLY = ("history", "model_info", "dataset", "config")
+
+
+def list_row(experiment: dict) -> dict:
+    return {key: value for key, value in experiment.items() if key not in DETAIL_ONLY}
+
 
 class ExperimentViews:
     def __init__(self, runs_root, cache):
@@ -51,7 +59,7 @@ class ExperimentViews:
     def get(self, path, query):
         identifier = query.get("id", [""])[0]
         if path == "/api/experiments":
-            return discover_experiments(self.runs_root)
+            return [list_row(row) for row in discover_experiments(self.runs_root)]
         if path == "/api/experiment":
             return self.detail(identifier)
         files = {

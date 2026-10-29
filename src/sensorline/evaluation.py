@@ -5,6 +5,7 @@ import torch
 from torchvision.ops import nms
 
 from .batching import forward_groups
+from .border import cut_by_time_border
 from .data import image_boxes
 from .losses import pairwise_iou
 
@@ -79,6 +80,52 @@ def match_overlaps(overlaps, threshold):
     return matched_target_indices(overlaps, threshold) >= 0
 
 
+IGNORED = -2
+
+
+def prepare_ignoring_matching(prediction, target, border):
+    """Score order, IoUs and the cut boxes on both sides, for a `border_ignore` evaluation.
+
+    A box is cut when it touches a time edge of the frame and is shorter than `border`
+    samples (see border.py). Predictions are in score order, as in prepare_matching.
+    """
+    order = prediction["scores"].argsort(descending=True)
+    boxes = prediction["boxes"][order]
+    time_steps = target["size"][1]
+    overlaps = pairwise_iou(boxes, target["boxes"]).numpy()
+    return (
+        prediction["scores"][order].numpy(), overlaps,
+        cut_by_time_border(target["boxes"], time_steps, border),
+        cut_by_time_border(boxes, time_steps, border),
+    )
+
+
+def matched_ignoring_cut(overlaps, threshold, cut_targets, cut_predictions):
+    """Greedy one-to-one matching in which cut boxes count neither for nor against the model.
+
+    Per prediction in score order: the index of the target it matches, -1 for a false
+    positive and IGNORED for a detection that is set aside. A detection prefers an uncut
+    target; failing that, it is set aside when it overlaps a cut target or is cut itself.
+    A cut target that nothing detects is not a miss either (the caller leaves it out).
+    """
+    used_targets = np.zeros(overlaps.shape[1], dtype=bool)
+    matched_targets = np.full(len(overlaps), -1, dtype=int)
+    for prediction_index, row in enumerate(overlaps):
+        close = row >= threshold
+        candidates = np.flatnonzero(~used_targets & ~cut_targets & close)
+        if len(candidates):
+            target_index = candidates[np.argmax(row[candidates])]
+            used_targets[target_index] = True
+            matched_targets[prediction_index] = target_index
+            continue
+        cut_candidates = np.flatnonzero(~used_targets & cut_targets & close)
+        if len(cut_candidates):
+            used_targets[cut_candidates[np.argmax(row[cut_candidates])]] = True
+        if len(cut_candidates) or cut_predictions[prediction_index]:
+            matched_targets[prediction_index] = IGNORED
+    return matched_targets
+
+
 def average_precision(scores, true_positive, total_targets):
     if total_targets == 0 or len(scores) == 0:
         return 0.0
@@ -98,7 +145,28 @@ def average_precision(scores, true_positive, total_targets):
     return float(np.mean(interpolated_precision))
 
 
-def average_precisions(predictions, targets) -> list[float]:
+def average_precisions_ignoring_cut(predictions, targets, border) -> list[float]:
+    """average_precisions with the cut boxes left out of the targets and of the detections."""
+    prepared = [
+        prepare_ignoring_matching(prediction, target, border)
+        for prediction, target in zip(predictions, targets)
+    ]
+    total_targets = sum(int((~cut_targets).sum()) for _, _, cut_targets, _ in prepared)
+    values = []
+    for threshold in np.linspace(0.5, 0.95, 10):
+        kept_scores, hits = [], []
+        for scores, overlaps, cut_targets, cut_predictions in prepared:
+            matches = matched_ignoring_cut(overlaps, float(threshold), cut_targets, cut_predictions)
+            kept = matches != IGNORED
+            kept_scores.append(scores[kept])
+            hits.append(matches[kept] >= 0)
+        values.append(average_precision(np.concatenate(kept_scores), np.concatenate(hits), total_targets))
+    return values
+
+
+def average_precisions(predictions, targets, border=0) -> list[float]:
+    if border:
+        return average_precisions_ignoring_cut(predictions, targets, border)
     total_targets = sum(len(target["boxes"]) for target in targets)
     prepared = [
         prepare_matching(prediction, target["boxes"])
@@ -112,9 +180,10 @@ def average_precisions(predictions, targets) -> list[float]:
     return values
 
 
-def sample_row(target, predicted_count: int, true_positives: int) -> dict:
-    true_count = len(target["boxes"])
-    return {
+def sample_row(target, predicted_count: int, true_positives: int, ignored=None) -> dict:
+    """The counts of one frame; `ignored` is (cut targets, cut detections) of a border_ignore evaluation."""
+    true_count = len(target["boxes"]) - (ignored[0] if ignored else 0)
+    row = {
         "id": target["id"],
         "true_count": true_count,
         "predicted_count": predicted_count,
@@ -123,14 +192,25 @@ def sample_row(target, predicted_count: int, true_positives: int) -> dict:
         "fp": predicted_count - true_positives,
         "fn": true_count - true_positives,
     }
+    if ignored:
+        row["ignored_objects"], row["ignored_detections"] = ignored
+    return row
 
 
-def sample_detection_metrics(prediction, target, confidence, match_iou) -> dict:
+def sample_detection_metrics(prediction, target, confidence, match_iou, border=0) -> dict:
     keep = prediction["scores"] >= confidence
     accepted = {
         "boxes": prediction["boxes"][keep],
         "scores": prediction["scores"][keep],
     }
+    if border:
+        _, overlaps, cut_targets, cut_predictions = prepare_ignoring_matching(accepted, target, border)
+        matches = matched_ignoring_cut(overlaps, match_iou, cut_targets, cut_predictions)
+        ignored = int((matches == IGNORED).sum())
+        return sample_row(
+            target, len(accepted["boxes"]) - ignored, int((matches >= 0).sum()),
+            ignored=(int(cut_targets.sum()), ignored),
+        )
     _, overlaps = prepare_matching(accepted, target["boxes"])
     matches = match_overlaps(overlaps, match_iou)
     return sample_row(target, len(accepted["boxes"]), int(matches.sum()))
@@ -162,32 +242,46 @@ def summarize_metrics(rows, ap_values=None) -> dict:
     summary["count_rmse"] = float(np.sqrt(np.mean(np.square(errors))))
     summary["count_bias"] = float(np.mean(errors))
     summary["exact_count_accuracy"] = float(np.mean(errors == 0))
+    if rows and "ignored_objects" in rows[0]:
+        summary["ignored_objects"] = sum(row["ignored_objects"] for row in rows)
+        summary["ignored_detections"] = sum(row["ignored_detections"] for row in rows)
     return summary
 
 
-def detection_metrics(predictions, targets, confidence, match_iou):
-    ap_values = average_precisions(predictions, targets)
+def detection_metrics(predictions, targets, confidence, match_iou, border=0):
+    ap_values = average_precisions(predictions, targets, border)
     rows = []
     for prediction, target in zip(predictions, targets):
-        rows.append(sample_detection_metrics(prediction, target, confidence, match_iou))
+        rows.append(sample_detection_metrics(prediction, target, confidence, match_iou, border))
     return summarize_metrics(rows, ap_values), rows
 
 
-def confidence_metrics(predictions, targets, confidences, match_iou):
+def confidence_metrics(predictions, targets, confidences, match_iou, border=0):
     """Reuse greedy matches of score prefixes; retain evaluator ordering on ties."""
     rows_by_confidence = {confidence: [] for confidence in confidences}
     for prediction, target in zip(predictions, targets):
-        scores, overlaps = prepare_matching(prediction, target["boxes"])
-        hits = np.concatenate(([0], np.cumsum(match_overlaps(overlaps, match_iou))))
+        if border:
+            scores, overlaps, cut_targets, cut_predictions = prepare_ignoring_matching(prediction, target, border)
+            matches = matched_ignoring_cut(overlaps, match_iou, cut_targets, cut_predictions)
+            hits = np.concatenate(([0], np.cumsum(matches >= 0)))
+            ignored_counts = np.concatenate(([0], np.cumsum(matches == IGNORED)))
+        else:
+            scores, overlaps = prepare_matching(prediction, target["boxes"])
+            hits = np.concatenate(([0], np.cumsum(match_overlaps(overlaps, match_iou))))
         has_ties = len(np.unique(scores)) != len(scores)
         for confidence in confidences:
             if has_ties:
                 # torch.argsort can reorder equal scores when the array is shortened.
                 # Match the accepted array exactly as the ordinary evaluator does.
-                row = sample_detection_metrics(prediction, target, confidence, match_iou)
+                row = sample_detection_metrics(prediction, target, confidence, match_iou, border)
             else:
-                predicted_count = int((prediction["scores"] >= confidence).sum())
-                row = sample_row(target, predicted_count, int(hits[predicted_count]))
+                accepted = int((prediction["scores"] >= confidence).sum())
+                if border:
+                    ignored = int(ignored_counts[accepted])
+                    row = sample_row(target, accepted - ignored, int(hits[accepted]),
+                                     ignored=(int(cut_targets.sum()), ignored))
+                else:
+                    row = sample_row(target, accepted, int(hits[accepted]))
             rows_by_confidence[confidence].append(row)
     return {confidence: summarize_metrics(rows) for confidence, rows in rows_by_confidence.items()}
 
@@ -245,7 +339,8 @@ def evaluate(model, loader, device, config, criterion=None, labeled=True):
     serialized = serialize_predictions(predictions, targets, config)
     if labeled:
         metrics, rows = detection_metrics(
-            predictions, targets, config["confidence"], config["match_iou"]
+            predictions, targets, config["confidence"], config["match_iou"],
+            config.get("border_ignore", 0),
         )
     else:
         # Without labels a frame has only its count.

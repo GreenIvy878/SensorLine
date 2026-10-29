@@ -3,9 +3,9 @@
 Checkpoints of this repository do not record the frame length or the box statistics of
 their training data, so the passport is rebuilt from that data (the same dataset code
 that trained the model reads it) and saved as `<checkpoint stem>.passport.json`. The
-passport is tied to the checkpoint file by its SHA-256. When the dataset root holds a
-recording_transform.json (written by tools/locate_frames.py), the passport carries it:
-it says how the training frames were made from the raw recordings.
+passport is tied to the checkpoint file by its SHA-256. How raw conveyor recordings are
+turned into such frames is not a property of one checkpoint; the tracking config says it
+(see preprocess.py).
 """
 
 from pathlib import Path
@@ -17,8 +17,8 @@ from ..artifacts import file_sha256, read_json, write_json
 from ..config import sensor_count
 from ..data import build_dataset, find_images
 
-PASSPORT_VERSION = 2
-TRANSFORM_FILE = "recording_transform.json"
+# 3: the recording transform of version 2 moved to the tracking config.
+PASSPORT_VERSION = 3
 PASSPORT_SUFFIX = ".passport.json"
 # Bit depth of the stored training frames by PIL image mode.
 MODE_BITS = {"L": 8, "I;16": 16, "I;16L": 16, "I;16B": 16}
@@ -74,25 +74,6 @@ def class_names(data: dict) -> list[str]:
     return ["object"]
 
 
-def recording_transform(data: dict) -> dict | None:
-    """The transform from raw recordings to the training frames, if the dataset describes one."""
-    path = Path(data["train"]).parent / TRANSFORM_FILE
-    if not path.is_file():
-        return None
-    transform = read_json(path)
-    transform["sha256"] = file_sha256(path)
-    return transform
-
-
-def transform_changed(passport: dict, data: dict) -> bool:
-    """Whether the dataset's recording transform file differs from the copy in the passport."""
-    path = Path(data["train"]).parent / TRANSFORM_FILE
-    if not path.is_file():
-        return False
-    saved = passport.get("recording_transform")
-    return saved is None or saved.get("sha256") != file_sha256(path)
-
-
 def build_passport(checkpoint: dict, checkpoint_path) -> dict:
     saved = checkpoint["config"]
     data = saved["data"]
@@ -112,7 +93,6 @@ def build_passport(checkpoint: dict, checkpoint_path) -> dict:
         "input_shape": [sensor_count(data), time_steps],
         "axis_order": ["sensor", "time"],
         "dtype": "float32",
-        "recording_transform": recording_transform(data),
         "quantize": {"bits": bits, "range": [0, 2 ** bits - 1], "source": f"training frames are {mode} images"},
         "normalize": {"formula": "(pixel - offset) / scale", "scale": data["scale"], "offset": data["offset"],
                       "function": "sensorline.data.pixels_to_signal"},
@@ -145,8 +125,7 @@ def load_passport(checkpoint: dict, checkpoint_path, log=print) -> dict:
     """The saved passport of a checkpoint, built from its training data and saved on first use."""
     path = passport_path(checkpoint_path)
     passport = read_json(path)
-    stale = passport is not None and (passport.get("passport_version") != PASSPORT_VERSION
-                                      or transform_changed(passport, checkpoint["config"]["data"]))
+    stale = passport is not None and passport.get("passport_version") != PASSPORT_VERSION
     if passport is None or stale:
         passport = build_passport(checkpoint, checkpoint_path)
         write_json(path, passport)

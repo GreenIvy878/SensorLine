@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from ...config import validate_border_ignore
 from ..workspace import requested_device
 from .runner import SOURCES, InferenceRunner
 
@@ -22,6 +23,10 @@ class InferenceViews:
             if not str(folder) or not (folder / "images").is_dir():
                 raise ValueError("Folder must contain an images/ directory")
         device = requested_device(body)
+        # Empty keeps the checkpoint's own setting; a number replaces it.
+        border_ignore = body.get("border_ignore")
+        if border_ignore is not None:
+            validate_border_ignore(border_ignore, "Cut-object length")
         self.runner.start({
             "checkpoint": str(checkpoint),
             "checkpoint_id": body["checkpoint"],
@@ -30,6 +35,7 @@ class InferenceViews:
             # The splits of a run are always labeled; a folder may be new, unlabeled data.
             "labeled": bool(body.get("labeled", True)) if source == "folder" else True,
             "device": device,
+            "border_ignore": border_ignore,
         })
         return self.runner.status()
 

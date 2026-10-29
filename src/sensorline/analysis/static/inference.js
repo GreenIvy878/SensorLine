@@ -9,6 +9,7 @@ const inferenceUI = {
   folder: '',
   labeled: true,
   device: 'auto',
+  borderIgnore: '',
   state: null,
   message: '',
   resultKey: '',
@@ -23,7 +24,8 @@ const FRAMES_PER_PAGE = 12;
 const SOURCE_TEXT = { val: 'validation set', train: 'training set', folder: 'folder' };
 /* Overlay colors sit on grayscale images, not on the page, so they are fixed. */
 const BOX_COLORS = {
-  found: '#6cff9a', missed: '#ff6b9d', tp: '#80c8ff', fp: '#ffb571', prediction: '#80c8ff', below: '#dcafff'
+  found: '#6cff9a', missed: '#ff6b9d', tp: '#80c8ff', fp: '#ffb571', prediction: '#80c8ff', below: '#dcafff',
+  ignored: '#9aa0a6'
 };
 
 function checkpointLabel(row) {
@@ -54,6 +56,10 @@ function inferenceFormHTML() {
       <label class="field"><span>Device</span><select id="inference-device">` +
         `${['auto', 'cuda', 'cpu'].map(name => `<option ${name === ui.device ? 'selected' : ''}>${name}` +
         `</option>`).join('')}</select></label>
+      <label class="field"><span>Ignore cut objects<small>samples</small></span>` +
+        `<input id="inference-border" type="number" min="0" step="0.5" value="${esc(ui.borderIgnore)}" ` +
+        `placeholder="as trained" title="Objects that a time edge of the frame cuts to fewer samples than this are not ` +
+        `counted, neither as found nor as missed. Empty uses the setting the checkpoint was trained with."></label>
     </div>
     <div class="actions"><span class="message">Run on</span>` +
       `<div class="segmented" role="group" aria-label="Data">` +
@@ -100,6 +106,9 @@ function renderInferenceForm() {
   $('inference-device').onchange = () => {
     ui.device = $('inference-device').value;
   };
+  $('inference-border').oninput = () => {
+    ui.borderIgnore = $('inference-border').value;
+  };
   node.querySelectorAll('[data-source]').forEach(button => button.onclick = () => {
     ui.source = button.dataset.source;
     ui.message = '';
@@ -122,7 +131,8 @@ async function startInference() {
       source: ui.source,
       folder: ui.folder,
       labeled: ui.labeled,
-      device: ui.device
+      device: ui.device,
+      border_ignore: ui.borderIgnore === '' ? null : Number(ui.borderIgnore)
     })).inference;
     // The previous result belongs to another run; do not leave it under the new progress bar.
     ui.resultKey = '';
@@ -279,7 +289,8 @@ function paintInferenceFrame(canvas, sample, showBelow, withScores) {
     }
   };
   context.lineWidth = 2;
-  for (const target of sample.targets) draw(target.box, target.detected ? BOX_COLORS.found : BOX_COLORS.missed, false);
+  for (const target of sample.targets)
+    draw(target.box, target.detected ? BOX_COLORS.found : target.ignored ? BOX_COLORS.ignored : BOX_COLORS.missed, false);
   for (const detection of sample.detections)
     draw(detection.box, BOX_COLORS[detection.classification], sample.labeled, detection.score);
   if (showBelow)
@@ -287,12 +298,13 @@ function paintInferenceFrame(canvas, sample, showBelow, withScores) {
   context.setLineDash([]);
 }
 
-function boxLegend(labeled) {
+function boxLegend(labeled, ignoring = false) {
   const key = (color, text, dashed = false) => `<span>` +
     `<i class="${dashed ? 'dashed' : ''}" style="border-color:${color}"></i>${text}</span>`;
   return `<div class="box-legend">${labeled
     ? key(BOX_COLORS.found, 'labeled object, found') + key(BOX_COLORS.missed, 'labeled object, missed') +
-      key(BOX_COLORS.tp, 'correct detection', true) + key(BOX_COLORS.fp, 'false alarm', true)
+      key(BOX_COLORS.tp, 'correct detection', true) + key(BOX_COLORS.fp, 'false alarm', true) +
+      (ignoring ? key(BOX_COLORS.ignored, 'cut by the frame edge, not counted') : '')
     : key(BOX_COLORS.prediction, 'detected object')}${key(BOX_COLORS.below, 'below the confidence threshold', true)}` +
       `</div>`;
 }
@@ -354,7 +366,7 @@ async function showInferenceFrame() {
   facts.push(['Candidates below the threshold', sample.below_threshold.length]);
   const scores = sample.detections.map(detection => detection.score.toFixed(2)).join(', ') || 'none';
   node.innerHTML = card(ui.frame, `<div class="frame-detail"><div><canvas id="inference-canvas" class="heatmap">` +
-    `</canvas>${boxLegend(sample.labeled)}</div>
+    `</canvas>${boxLegend(sample.labeled, sample.targets.some(target => target.ignored))}</div>
     <div><ul class="frame-facts">${facts.map(([label, value]) => `<li>${esc(label)}<strong>${esc(value)}</strong>` +
       `</li>`).join('')}</ul>
     <p class="legend" style="margin-top:12px">Confidence of the detections: ${esc(scores)}.</p>
@@ -385,7 +397,7 @@ function renderFrames(state) {
         `<span class="muted">${frames.length} frames · page ${ui.page + 1} of ${pages}</span>` +
         `<button id="inference-next" ${ui.page + 1 >= pages ? 'disabled' : ''}>Next</button></div>
     ${frames.length ? '<div id="inference-gallery" class="gallery"></div>' : empty('No frame matches this filter.')}` +
-      `${boxLegend(state.labeled)}`) + '<div id="inference-frame"></div>';
+      `${boxLegend(state.labeled, state.evaluation.border_ignore > 0)}`) + '<div id="inference-frame"></div>';
   $('inference-frames').querySelectorAll('[data-filter]').forEach(button => button.onclick = () => {
     ui.frameFilter = button.dataset.filter;
     ui.page = 0;
@@ -526,7 +538,9 @@ function renderInferenceResult(force = false) {
   node.innerHTML = `<p class="legend"><strong>${esc(checkpoint ? checkpoint.name : 'Checkpoint')}</strong> (epoch ` +
     `${esc(state.checkpoint_epoch)}) on the ${esc(SOURCE_TEXT[state.request.source])} · ${state.frames.length}` +
     ` frames · confidence ≥ ${thresholds.confidence} · NMS IoU ${thresholds.nms_iou}` +
-    `${state.labeled ? ` · a detection is correct at IoU ≥ ${thresholds.match_iou}` : ''} · ${esc(state.device)}` +
+    `${state.labeled ? ` · a detection is correct at IoU ≥ ${thresholds.match_iou}` : ''}` +
+    `${thresholds.border_ignore > 0 ? ` · objects cut by a frame edge and shorter than ${thresholds.border_ignore} samples are not counted` : ''}` +
+    ` · ${esc(state.device)}` +
     `${state.request.source === 'folder' ? ` · ${esc(signalText(state.preprocessing))}` : ''}</p>` +
     (state.labeled ? labeledResultHTML(state) : unlabeledResultHTML(state)) +
     `<div id="inference-frames"></div><p class="legend">Predictions and metrics are saved in <span class="path">` +

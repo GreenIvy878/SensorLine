@@ -30,13 +30,15 @@ def confidence_sweep(predictions: list, evaluation: dict) -> list:
     ]
     targets = [
         {"id": row["id"],
-         "boxes": box_tensor(row["target_boxes_signal_xyxy"])}
+         "boxes": box_tensor(row["target_boxes_signal_xyxy"]),
+         "size": tuple(row["size_sensor_time"])}
         for row in predictions
     ]
     floor = evaluation["ap_min_confidence"]
     grid = {round(float(value), 2) for value in np.arange(SWEEP_STEP, 1.0, SWEEP_STEP) if value >= floor}
     grid.add(evaluation["confidence"])
-    summaries = confidence_metrics(detections, targets, sorted(grid), evaluation["match_iou"])
+    summaries = confidence_metrics(detections, targets, sorted(grid), evaluation["match_iou"],
+                                   evaluation.get("border_ignore", 0))
     return [
         {"confidence": confidence,
          **{key: summary[key] for key in ("precision", "recall", "f1", "tp", "fp", "fn", "count_mae")}}
@@ -53,7 +55,7 @@ def run_inference(request: dict, output_root: Path, report) -> dict:
     result = evaluate_checkpoint(
         checkpoint, request["checkpoint"], device, saved["data"], request["source"],
         runtime=saved["training"], folder=request["folder"] if request["source"] == "folder" else None,
-        labeled=labeled, progress=report,
+        labeled=labeled, progress=report, border_ignore=request.get("border_ignore"),
     )
     rows, predictions, summary = result["rows"], result["predictions"], result["report"]
     if labeled:
@@ -141,7 +143,8 @@ class InferenceRunner:
 
         if labeled:
             classified = classify_sample(row, evaluation)
-            targets = [{"box": image_box(obj["box"], axis), "detected": obj["detected"]}
+            targets = [{"box": image_box(obj["box"], axis), "detected": obj["detected"],
+                        "ignored": obj["ignored"]}
                        for obj in classified["objects"]]
             detections = classified["detections"]
         else:

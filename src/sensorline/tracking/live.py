@@ -35,7 +35,7 @@ from torchvision.ops import nms
 from ..local_page import LocalHandler, LocalServer
 from .detector import Box, Detection, WindowResult
 from .pipeline import EventBus, SegmentDone, TrackingRun, recording_parts, stream_windows, track_recording
-from .settings import INPUT_KINDS, load_settings
+from .settings import INPUT_KINDS, load_settings, validate_settings
 from .tracker import CLOSED, MERGED, REJECTED, Tracker
 
 STATIC = Path(__file__).parent / "static"
@@ -240,10 +240,9 @@ class Session:
         return self.status()
 
 
-def display_peak(passport: dict, kind: str) -> float:
-    transform = passport.get("recording_transform")
-    # Typical training frames peak at a few times the weakest one.
-    return 4 * transform["min_peak"] if kind == "raw_adc" and transform else 255.0
+def display_peak(settings: dict) -> float:
+    """The signal level drawn at full brightness in the strip: raw ADC units or pixel values."""
+    return settings["output"]["display_peak_adc"] if settings["data"]["input_kind"] == "raw_adc" else 255.0
 
 
 def describe(settings, geometry, passport, preprocessor, csv_path: Path, checkpoint: Path, recording_rate) -> dict:
@@ -266,8 +265,7 @@ def start_live(csv_path, checkpoint, settings: dict, *, run_dir=None, speed=1.0,
     settings["output"]["save_frames"] = True
     prepared = TrackingRun(csv_path, checkpoint, settings, log=log)
     pacer = Pacer(speed, prepared.preprocessor.model_rate_hz)
-    recorder = LiveRecorder(display_peak(prepared.passport, prepared.preprocessor.kind),
-                            prepared.preprocessor.kind, pacer)
+    recorder = LiveRecorder(display_peak(prepared.settings), prepared.preprocessor.kind, pacer)
     meta = describe(prepared.settings, prepared.geometry, prepared.passport, prepared.preprocessor,
                     Path(csv_path), Path(checkpoint), prepared.recording_rate)
     session = Session("live", meta, recorder, pacer)
@@ -302,6 +300,11 @@ class Replay:
         self.log = log
         self.resolved = yaml.safe_load((self.run_dir / "config.resolved.yaml").read_text(encoding="utf-8"))
         self.settings = self.resolved["settings"]
+        try:
+            validate_settings(self.settings)
+        except KeyError as error:
+            raise ValueError(f"{self.run_dir} was made by an older version of the tracker (no option {error}); "
+                             "run the recording again") from error
         self.passport = self.resolved["model"]["passport"]
         self.csv_path = Path(self.resolved["csv"]["path"])
         if not self.csv_path.is_file():
@@ -377,7 +380,7 @@ class Replay:
 
     def session(self, score_thr=None, nms_iou=None) -> Session:
         kind = self.settings["data"]["input_kind"]
-        recorder = LiveRecorder(display_peak(self.passport, kind), kind)
+        recorder = LiveRecorder(display_peak(self.settings), kind)
         meta = {**self.resolved_meta(), "score_thr": score_thr or self.settings["model"]["score_thr"],
                 "nms_iou": nms_iou or self.settings["model"]["nms_iou"]}
         session = Session("replay", meta, recorder)

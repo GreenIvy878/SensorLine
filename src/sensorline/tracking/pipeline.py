@@ -160,7 +160,7 @@ def recording_parts(csv_path, settings: dict, passport: dict, log=print):
     """Source, preprocessor and windower of a recording, from resolved settings and a passport."""
     sensors, width = passport["input_shape"]
     data = settings["data"]
-    source = RecordSource(csv_path, data, sensors, input_range(passport, data["input_kind"]))
+    source = RecordSource(csv_path, data, sensors, input_range(passport, data))
     log(source.describe())
     recording_rate = sample_rate(settings, source)
     # Pooling simulates a slower poll rate; the preprocessor sees pooled polls.

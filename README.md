@@ -27,7 +27,8 @@ Models are judged on both groups of metrics, never on the loss:
 ## Results
 
 Ten variants of the detector were compared on the real data (703 training and
-231 validation frames, 723 validation objects). Each variant got the same Optuna
+231 validation frames, 723 validation objects, with the labels of that time; the
+labels have been corrected since, so the current data give other numbers). Each variant got the same Optuna
 search: 40 trials of 60 epochs over the same 22 hyperparameters (learning
 rate, optimizer, batch size, loss weights, augmentation strengths), selecting
 by validation F1. The table shows the best trial of each search.
@@ -164,10 +165,10 @@ from the model and the tracker; nothing is compared with labels.
 Recordings of stored pixel values ("Pixels" on the page, `data.input_kind:
 pixels`) work with any checkpoint; `tools/frames_to_csv.py` makes one from the
 frames of a split, and [docs/guide.md](docs/guide.md#counting-in-long-recordings)
-shows a run on the toy model of the quick start. Raw ADC recordings need the
-recording transform of the model's dataset (`recording_transform.json`, built by
-`tools/locate_frames.py` from the recordings and the training frames); the data
-are not public.
+shows a run on the toy model of the quick start. Raw ADC recordings (the
+default, `data.input_kind: raw_adc`) are averaged and scaled the way the training
+frames were made from the conveyor recordings; the numbers of that transform are in
+`configs/tracking/default.yaml`. The data are not public.
 
 ## Usage
 
@@ -248,7 +249,7 @@ dashboard.py, track.py   the dashboard and the counting page for long recordings
                          in the browser on the first free port from 8008 and 8010
 tools/                   analyze (statistics as JSON), model_info, compare_runs, make_toy_data,
                          finetune_demo (the fine-tuning check above), track_run,
-                         track_folder, frames_to_csv, locate_frames
+                         track_folder, frames_to_csv
 configs/                 the ten compared models, the toy config, the Optuna search space
 src/sensorline/          the core: data, models/, losses, trainer, evaluation, inference,
                          finetune, optuna_search, config; it does not import analysis/
@@ -263,7 +264,7 @@ docs/                    the guide and images
 ```bash
 pip install -e ".[optuna,dev]"
 python -m ruff check .
-python -m unittest discover -s tests
+python -m unittest discover -b -s tests     # -b shows the output of failing tests only
 ```
 
 GitHub Actions runs the same lint and tests on Ubuntu and Windows with the

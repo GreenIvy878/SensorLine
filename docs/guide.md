@@ -56,6 +56,8 @@ in one table, `SECTIONS` in `src/sensorline/config.py`.
   frames only). `lr_schedule: cosine`, `warmup_epochs` and `ema_decay` are off by
   default; they did not help in a check on the control model (3 seeds).
 - `evaluation`: `confidence`, `nms_iou`, `match_iou` and the candidate limits.
+  `border_ignore` (optional, off) leaves objects cut by the frame edge out of the metrics, see
+  [Objects cut by the frame edge](#objects-cut-by-the-frame-edge).
 
 `python tools/model_info.py --config <yaml> --time 120` prints the layer shapes,
 parameters and receptive field before any training.
@@ -105,6 +107,36 @@ frames by a paired bootstrap over frames (`--metric f1|precision|recall|count_ma
 A folder may be a run, a `test.py` report or an Optuna study (its best trial).
 "not distinguishable" means the 95% interval of the difference contains zero.
 
+### Objects cut by the frame edge
+
+A frame is a window over a longer recording, so an object at its first or last time
+sample is seen only in part, and the overlapping neighbour window sees it whole. A
+stub of two or three samples is annotated and detected almost at random (on the real
+data 10% of the 2.2-3 sample stubs are missed, against 0.7% of the longer ones), which
+adds noise to the metrics, to the choice of the best epoch and to the loss.
+
+`border_ignore: L` (samples; 0 or absent disables it) treats a box as cut when it touches
+a time edge of the frame (within one sample, as `tracker.edge_tol`) and is shorter than
+`L` samples. It has two independent places:
+
+- `evaluation.border_ignore`: a cut annotation that nothing detects is not a miss, a
+  detection over a cut annotation, or a cut detection with no annotation, is not a false
+  alarm and not a hit. They are left out of counts, precision, recall, F1, mAP and the
+  count error alike; `metrics.json` reports how many (`ignored_objects`,
+  `ignored_detections`). Training uses this for the choice of the best epoch.
+- `loss.border_ignore`: a cut annotation is no target, and the cells around it are
+  neither positive nor negative, so the model is not taught either answer for it.
+
+Only the time edges count: an object at the end of the sensor line has no neighbouring
+window, and a miss there stays a miss. Neither option changes anything while off:
+configs, checkpoints and Optuna studies made without it load and compare as before.
+
+A saved model can be scored by another rule without retraining: `test.py --border-ignore 4`,
+or the field "Ignore cut objects" of the dashboard's Inference section (empty uses the
+checkpoint's own setting). Runs with different rules measure different things; compare them
+only on the same setting. On the best trial of each of seven searches, `4` removed about
+half of the errors (validation: 18 on average, 9 with the rule) at the price of 9% of the objects.
+
 ## Dashboard
 
 ```bash
@@ -150,11 +182,14 @@ python tools/track_run.py --csv toy_data/recording/recording.csv --model runs/to
 
 `input_kind: pixels` ("Pixels" on the page) reads a recording stored like the
 training images and works with any checkpoint. The default, `raw_adc`, reads raw
-conveyor recordings and needs the transform from recordings to frames that
-`tools/locate_frames.py` reconstructs from the private data.
+conveyor recordings: the polls are averaged down to `data.model_rate_hz` (20 Hz,
+10 polls of 200 Hz) and every window is scaled from its median to 255, as the
+training frames were made; a window whose peak is below `windows.empty_peak_adc` is
+empty and not given to the model. A file whose lines end with the delimiter is read
+from its first line: an empty last cell does not make that line a header.
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests
+python -m unittest discover -b -s tests
 ```

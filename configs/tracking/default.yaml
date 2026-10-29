@@ -20,9 +20,15 @@ data:
   channel_cols: auto        # auto or a list of column names / 0-based indices, in sensor order
   orientation: auto         # auto, rows_are_polls or rows_are_channels
   # raw_adc: recordings of the conveyor (12-bit ADC codes at the full poll rate), turned
-  # into training-like frames by the recording transform of the model passport.
+  # into training-like frames as the training frames were made from them (see
+  # sensorline/tracking/preprocess.py and model_rate_hz, adc_range, windows.empty_peak_adc).
   # pixels: values stored like the training images (8-bit pixels).
   input_kind: raw_adc
+  # raw_adc: samples per second of the training frames. They are means of 10 polls of
+  # the 200 Hz conveyor recordings; a recording is averaged down to this rate.
+  model_rate_hz: 20
+  # raw_adc: values a recording may hold (12-bit ADC codes); others are counted in the report.
+  adc_range: [0, 4095]
   gap_factor: 3.0           # a time step larger than gap_factor × median step starts a new segment
   chunk_rows: 4096          # rows read at a time
   time_unit_s: null         # seconds per unit of the time column (for sample_rate_hz: auto)
@@ -40,9 +46,9 @@ windows:
   margin: 2                 # samples
   tail_mode: align_end      # align_end or pad_background
   # raw_adc only: a window whose peak (ADC units above the window median) is below this
-  # fraction of the weakest training frame is empty and is not given to the model.
-  # Conveyor recordings: noise peaks 10-80, objects from about 150, weakest frame 233.
-  empty_peak: 0.5
+  # is empty and is not given to the model. Conveyor recordings: noise peaks 10-80,
+  # objects from about 150, the weakest training frame 232.6; this is half of it.
+  empty_peak_adc: 116.3
 
 tracker:
   match_iou: 0.3            # σ
@@ -57,3 +63,6 @@ tracker:
 output:
   runs_root: ../../runs/tracking   # relative to this file
   save_frames: false            # attach window frames to WindowResult (the live screen turns it on)
+  # raw_adc only: ADC units above the window median drawn at full brightness in the
+  # signal strip of the page (typical frames peak at about 4 times the weakest one).
+  display_peak_adc: 930

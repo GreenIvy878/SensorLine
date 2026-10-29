@@ -5,19 +5,19 @@ Two kinds of input:
 pixels   the values are stored like the training images: 8-bit pixels. A window goes
          through sensorline.data.pixels_to_signal, as the training frames do.
 raw_adc  the recordings of the conveyor: 12-bit ADC codes at the full poll rate. The
-         training frames were made from them by the recording transform of the
-         passport (reconstructed by tools/locate_frames.py and verified there on the
-         training frames):
+         training frames were made from them this way (the tracking config holds the
+         numbers: data.model_rate_hz, data.adc_range, windows.empty_peak_adc):
            stream:  mean over 1 / model_rate_hz of polls (10 polls of the 200 Hz
                     training recordings), on a grid aligned to the file start. A
                     recording polled at another rate is averaged over the same time,
                     with fractional weights when that is not a whole number of polls;
            window:  minus the median of all values of the window (the belt level),
-                    times 255 / the window's maximum, rounded and clipped to [0, 255];
+                    times the top pixel value / the window's maximum, rounded and
+                    clipped to the pixel range of the training frames ([0, 255]);
          then the same pixels_to_signal. Two kinds of window are not given to the
          model, since training had nothing like them:
-           empty       its peak is below empty_peak × the weakest training frame;
-                       scaled to 255 its noise would look like objects;
+           empty       its peak is below empty_peak_adc; scaled to 255 its noise would
+                       look like objects;
            stationary  a sensor stays that far above the median through the whole
                        window: something lies still under the line (the belt
                        stopped). A moving object covers a sensor for a few samples;
@@ -32,16 +32,14 @@ import numpy as np
 
 from ..data import pixels_to_signal
 
-TRANSFORM_VERSION = 1
 
-
-def render_window(values: np.ndarray, transform: dict) -> tuple[np.ndarray, float]:
+def render_window(values: np.ndarray, pixel_range) -> tuple[np.ndarray, float]:
     """[sensors, W] decimated ADC values -> float32 pixels as in the training frames, and the window peak."""
     excess = values - np.median(values)
     peak = float(excess.max())
     if peak <= 0:
         return np.zeros(values.shape, dtype=np.float32), peak
-    low, high = transform["clip"]
+    low, high = pixel_range
     pixels = np.clip(np.round(excess * (high / peak)), low, high)
     return pixels.astype(np.float32), peak
 
@@ -56,9 +54,8 @@ def decimate(values: np.ndarray, factor: int) -> np.ndarray:
 WHOLE_RATIO = 1e-9
 
 
-def polls_per_sample(poll_rate_hz: float, transform: dict) -> int | float:
+def polls_per_sample(poll_rate_hz: float, model_rate: float) -> int | float:
     """How many polls of a recording make one model sample: a whole number where possible."""
-    model_rate = transform["poll_rate_hz"] / transform["decimate"]
     factor = poll_rate_hz / model_rate
     if factor < 1 - WHOLE_RATIO:
         raise ValueError(f"Poll rate {poll_rate_hz} Hz is below the model's sample rate {model_rate} Hz")
@@ -106,10 +103,10 @@ class FractionalBins:
         return first, samples
 
 
-def input_range(passport: dict, kind: str) -> tuple:
+def input_range(passport: dict, data_settings: dict) -> tuple:
     """Values a CSV of this kind may hold: ADC codes or stored pixel values."""
-    if kind == "raw_adc" and passport.get("recording_transform"):
-        return tuple(passport["recording_transform"]["adc_range"])
+    if data_settings["input_kind"] == "raw_adc":
+        return tuple(data_settings["adc_range"])
     return tuple(passport["quantize"]["range"])
 
 
@@ -120,27 +117,19 @@ class Preprocessor:
         self.kind = data_settings["input_kind"]
         self.scale = passport["normalize"]["scale"]
         self.offset = passport["normalize"]["offset"]
-        self.transform = None
+        # Rendered windows are clipped to the pixel range of the training frames.
+        self.pixel_range = tuple(passport["quantize"]["range"])
         self.factor = 1
         self.bins = None
         self.empty_peak = None
         if self.kind == "raw_adc":
-            self.transform = passport.get("recording_transform")
-            if self.transform is None:
-                raise ValueError(
-                    "data.input_kind raw_adc needs the recording transform in the model passport: run "
-                    "tools/locate_frames.py on the recordings and the training dataset, then delete the "
-                    "passport file next to the checkpoint so that it is rebuilt"
-                )
-            if self.transform["version"] != TRANSFORM_VERSION:
-                raise ValueError(f"Recording transform version {self.transform['version']}; expected {TRANSFORM_VERSION}")
             if poll_rate_hz is None:
                 raise ValueError("data.input_kind raw_adc needs the poll rate: set data.sample_rate_hz")
-            self.factor = polls_per_sample(poll_rate_hz, self.transform)
+            self.model_rate_hz = float(data_settings["model_rate_hz"])
+            self.factor = polls_per_sample(poll_rate_hz, self.model_rate_hz)
             if isinstance(self.factor, float):
                 self.bins = FractionalBins(self.factor)
-            self.empty_peak = windows_settings["empty_peak"] * self.transform["min_peak"]
-            self.model_rate_hz = self.transform["poll_rate_hz"] / self.transform["decimate"]
+            self.empty_peak = windows_settings["empty_peak_adc"]
         else:
             self.model_rate_hz = poll_rate_hz
 
@@ -188,7 +177,7 @@ class Preprocessor:
         """A window of stream samples -> (float32 model input, why it is skipped or None, peak)."""
         if self.kind != "raw_adc":
             return pixels_to_signal(values.astype(np.float32), self.scale, self.offset), None, None
-        pixels, peak = render_window(values, self.transform)
+        pixels, peak = render_window(values, self.pixel_range)
         skip = None
         if peak < self.empty_peak:
             skip = "empty"

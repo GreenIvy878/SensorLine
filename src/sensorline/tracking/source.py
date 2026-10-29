@@ -57,7 +57,12 @@ def pooled(items, pool: int):
         if carry is None:
             carry_start = -(-start // pool) * pool
             values = values[:, carry_start - start:]
+            if values.shape[1] == 0:
+                # The block ends before the first whole group; the grid starts with a later block.
+                continue
         else:
+            if start != carry_start + carry.shape[1]:
+                raise ValueError(f"Polls at {start} do not continue the segment")
             values = np.concatenate((carry, values), axis=1)
         whole = values.shape[1] // pool * pool
         if whole:
@@ -190,7 +195,8 @@ def detect_format(path: Path, settings: dict, channels: int) -> SourceFormat:
     rows = [split_line(line, delimiter) for line in lines]
     header = settings["header"]
     if header == AUTO:
-        header = not all(is_number(cell) for cell in rows[0])
+        # Empty cells say nothing: a line ending with the delimiter has one, header or not.
+        header = not all(is_number(cell) for cell in rows[0] if cell.strip())
     header_row = [cell.strip() for cell in rows[0]] if header else None
     data_rows = rows[1:] if header else rows
 

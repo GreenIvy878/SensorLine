@@ -22,7 +22,10 @@ PATH_OPTIONS = {("output", "runs_root")}
 
 
 def read_yaml(path: Path) -> dict:
-    values = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        values = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as error:
+        raise ValueError(f"{path}: {error}") from error
     require_mapping(values, str(path))
     return values
 
@@ -51,7 +54,10 @@ def parse_override(text: str) -> tuple[str, str, object]:
     section, dot, key = name.strip().partition(".")
     if not separator or not dot or not key:
         raise ValueError(f"Override {text!r} must look like section.key=value")
-    return section, key, yaml.safe_load(value)
+    try:
+        return section, key, yaml.safe_load(value)
+    except yaml.YAMLError as error:
+        raise ValueError(f"Override {text!r}: {error}") from error
 
 
 def load_settings(default_path, user_path=None, overrides=()) -> dict:
@@ -109,13 +115,19 @@ def validate_settings(settings: dict) -> None:
         raise ValueError("data.time_unit_s must be positive or null")
     if data["sample_rate_hz"] != AUTO and finite_number(data["sample_rate_hz"], "data.sample_rate_hz") <= 0:
         raise ValueError("data.sample_rate_hz must be positive")
+    if finite_number(data["model_rate_hz"], "data.model_rate_hz") <= 0:
+        raise ValueError("data.model_rate_hz must be positive")
+    adc_range = data["adc_range"]
+    if (not isinstance(adc_range, list) or len(adc_range) != 2
+            or finite_number(adc_range[0], "data.adc_range") >= finite_number(adc_range[1], "data.adc_range")):
+        raise ValueError("data.adc_range must be [low, high] with low < high")
 
     auto_or(windows["stride"], lambda v: require_integer(v, "windows.stride", minimum=1))
     unit_interval(windows["lmax_quantile"], "windows.lmax_quantile")
     if finite_number(windows["margin"], "windows.margin") < 0:
         raise ValueError("windows.margin must be nonnegative")
-    if not 0 <= finite_number(windows["empty_peak"], "windows.empty_peak") < 1:
-        raise ValueError("windows.empty_peak must be in [0, 1)")
+    if finite_number(windows["empty_peak_adc"], "windows.empty_peak_adc") < 0:
+        raise ValueError("windows.empty_peak_adc must be nonnegative; 0 gives every window to the model")
     if windows["tail_mode"] not in TAIL_MODES:
         raise ValueError(f"windows.tail_mode must be one of {TAIL_MODES}")
 
@@ -130,6 +142,8 @@ def validate_settings(settings: dict) -> None:
         raise ValueError("tracker.edge_tol must be nonnegative")
     if tracker["count_on"] not in COUNT_ON:
         raise ValueError(f"tracker.count_on must be one of {COUNT_ON}")
+    if finite_number(settings["output"]["display_peak_adc"], "output.display_peak_adc") <= 0:
+        raise ValueError("output.display_peak_adc must be positive")
 
 
 def resolve_model_settings(settings: dict, passport: dict) -> dict:

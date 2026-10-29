@@ -55,7 +55,7 @@ SECTIONS = {
         ),
         "optional": (),
         "defaults": {},
-        "unsaved": {},
+        "unsaved": {"border_ignore": 0},
         "tunable": ("confidence", "nms_iou", "max_detections", "pre_nms_topk"),
     },
     # A model YAML writes every loss option that applies to it (require_written_loss);
@@ -67,6 +67,7 @@ SECTIONS = {
         "unsaved": {
             "bbox": "ciou", "bbox_weight": 5.0, "objectness": "bce", "objectness_weight": 1.0,
             "negative_weight": 1.0, "hard_negative_ratio": 0, "focal_alpha": 0.25, "focal_gamma": 2.0,
+            "border_ignore": 0,
         },
         "tunable": (
             "bbox", "bbox_weight", "objectness", "objectness_weight", "negative_weight",
@@ -75,6 +76,8 @@ SECTIONS = {
     },
 }
 FOCAL_OPTIONS = {"focal_alpha", "focal_gamma"}
+# Loss options that an old config lacks and a model YAML may leave out: they are off by default.
+OFF_BY_DEFAULT_LOSS_OPTIONS = {"border_ignore"}
 PATH_OPTIONS = {
     "data": ("train", "val", "test"),
     "training": ("output_dir",),
@@ -140,7 +143,7 @@ def require_written_loss(loss: dict) -> None:
     The unsaved loss defaults complete older saved configs, and they differ from the
     values of the series; they must not reach a new run through an omitted line.
     """
-    options = set(SECTIONS["loss"]["unsaved"])
+    options = set(SECTIONS["loss"]["unsaved"]) - OFF_BY_DEFAULT_LOSS_OPTIONS
     required = options if loss.get("objectness") == "focal" else options - FOCAL_OPTIONS
     missing = required - set(loss)
     if missing:
@@ -200,6 +203,11 @@ def validate_training(training: dict) -> None:
         raise ValueError("training.output_dir must be a nonempty path string")
 
 
+def validate_border_ignore(value, name: str) -> None:
+    if finite_number(value, name) < 0:
+        raise ValueError(f"{name} must be nonnegative; 0 disables it")
+
+
 def validate_evaluation(evaluation: dict) -> None:
     for key in ("confidence", "ap_min_confidence", "nms_iou", "match_iou"):
         if not 0 < finite_number(evaluation[key], f"evaluation.{key}") <= 1:
@@ -210,6 +218,7 @@ def validate_evaluation(evaluation: dict) -> None:
         require_integer(evaluation[key], f"evaluation.{key}", minimum=1)
     if evaluation["pre_nms_topk"] < evaluation["max_detections"]:
         raise ValueError("pre_nms_topk must be >= max_detections")
+    validate_border_ignore(with_defaults("evaluation", evaluation)["border_ignore"], "evaluation.border_ignore")
 
 
 def validate_loss_config(loss: dict) -> None:
@@ -229,6 +238,7 @@ def validate_loss_config(loss: dict) -> None:
     if finite_number(options["focal_gamma"], "loss.focal_gamma") < 0:
         raise ValueError("loss.focal_gamma must be nonnegative")
     require_integer(options["hard_negative_ratio"], "loss.hard_negative_ratio")
+    validate_border_ignore(options["border_ignore"], "loss.border_ignore")
     for key in ("bbox_weight", "objectness_weight", "negative_weight"):
         if finite_number(options[key], f"loss.{key}") <= 0:
             raise ValueError(f"loss.{key} must be positive")
@@ -246,7 +256,11 @@ def validate_config(config: dict) -> None:
 
 def load_config(path: str | Path) -> dict:
     path = Path(path).resolve()
-    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as error:
+        # A syntax error is a bad config like any other; callers handle ValueError.
+        raise ValueError(f"{path}: {error}") from error
     validate_sections(config)
     require_written_loss(config["loss"])
     apply_defaults(config)

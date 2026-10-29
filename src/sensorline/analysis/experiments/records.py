@@ -26,12 +26,18 @@ def load_experiment(directory):
     }
 
 
+# A run folder of the tracker (track.py) has a summary.json too, but it is no training run.
+TRACKING_RUN_MARKER = "config.resolved.yaml"
+
+
 def discover_experiments(root):
     root = Path(root)
     if not root.exists():
         return []
     rows = []
     for path in sorted(root.rglob("summary.json")):
+        if (path.parent / TRACKING_RUN_MARKER).is_file():
+            continue
         try:
             rows.append(load_experiment(path.parent))
         except (ValueError, OSError, KeyError, TypeError) as error:
