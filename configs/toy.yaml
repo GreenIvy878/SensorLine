@@ -5,6 +5,7 @@ data:
   type: yolo_images
   train: ../toy_data/train
   val: ../toy_data/val
+  test: ../toy_data/test
   sensor_axis: x
   scale: 255.0
   offset: 0.0

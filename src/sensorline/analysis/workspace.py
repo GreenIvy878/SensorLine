@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 
-from ..config import DEVICES, load_config
+from ..config import DEVICES, declared_storage, load_config, sensor_count
 from .experiments.records import architecture_text, discover_experiments
 
 
@@ -35,6 +35,17 @@ def checkpoint_row(run: dict) -> dict:
     return {"id": run["id"], "name": run["name"], "directory": run["directory"],
             "timestamp": run.get("timestamp"), "status": run.get("status"),
             "f1": metrics.get("f1"), "count_mae": metrics.get("count_mae")}
+
+
+def same_signal(candidate: dict, saved: dict, folder) -> bool:
+    """Whether frames read as `candidate` data reach a model trained on `saved` data as the same signal.
+
+    The frames must have the same sensors and axis; pixel scale and offset may differ only
+    when the folder declares its own storage (a data.yaml), as for any dataset split.
+    """
+    if (candidate["type"], candidate["sensor_axis"], sensor_count(candidate)) !=             (saved["type"], saved["sensor_axis"], sensor_count(saved)):
+        return False
+    return (candidate["scale"], candidate["offset"]) == (saved["scale"], saved["offset"])         or declared_storage(folder) is not None
 
 
 class Workspace:
@@ -68,8 +79,43 @@ class Workspace:
         runs.sort(key=lambda row: row.get("timestamp") or "", reverse=True)
         return runs
 
+    def test_folder(self, run: dict, configs=None) -> tuple[Path, str] | None:
+        """The test split a checkpoint can be run on, and where that folder comes from.
+
+        A run trained with its test split monitored saved the folder in its own config. A run
+        trained without it has none, so the test folder of a workspace YAML takes its place
+        (the YAML the dashboard was started with first) when it feeds the model the same signal.
+        """
+        saved = run["config"]["data"]
+        if saved.get("test"):
+            return Path(saved["test"]), "run"
+        configs = self.valid_configs() if configs is None else configs
+        own = self.config_path.stem if self.config_path else None
+        for name in sorted(configs, key=lambda name: (name != own, name)):
+            data = configs[name]["data"]
+            if data.get("test") and same_signal(data, saved, data["test"]):
+                return Path(data["test"]), f"{name}.yaml"
+        return None
+
+    def splits(self, run: dict, configs=None) -> dict:
+        """Where each split of a run lives: train and validation as trained, test as test_folder finds it."""
+        saved = run["config"]["data"]
+        found = {"train": (Path(saved["train"]), "run") if saved.get("train") else None,
+                 "val": (Path(saved["val"]), "run") if saved.get("val") else None,
+                 "test": self.test_folder(run, configs)}
+        return {name: None if place is None else
+                {"path": str(place[0]), "origin": place[1], "found": (place[0] / "images").is_dir()}
+                for name, place in found.items()}
+
     def checkpoints(self) -> list:
-        return [checkpoint_row(run) for run in self.trained_runs()]
+        configs = self.valid_configs()
+        return [{**checkpoint_row(run), "splits": self.splits(run, configs)} for run in self.trained_runs()]
+
+    def run_record(self, experiment_id) -> dict:
+        record = next((row for row in self.trained_runs() if row["id"] == experiment_id), None)
+        if record is None:
+            raise ValueError("Choose a checkpoint from the runs folder")
+        return record
 
     def checkpoint_path(self, experiment_id) -> Path:
         directory = next((row["directory"] for row in self.trained_runs()

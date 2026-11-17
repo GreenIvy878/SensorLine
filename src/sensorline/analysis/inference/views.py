@@ -17,11 +17,23 @@ class InferenceViews:
         if source not in SOURCES:
             raise ValueError("Choose the data to run on")
         checkpoint = self.workspace.checkpoint_path(body.get("checkpoint"))
-        folder = None
+        folder, origin = None, "run"
         if source == "folder":
             folder = Path(str(body.get("folder") or "").strip())
             if not str(folder) or not (folder / "images").is_dir():
                 raise ValueError("Folder must contain an images/ directory")
+            origin = "folder"
+        elif source == "test":
+            place = self.workspace.test_folder(self.workspace.run_record(body["checkpoint"]))
+            if place is None:
+                raise ValueError("This run has no test split, and no model YAML next to --config names a test "
+                                 "folder with the same signal; run on a folder instead")
+            folder, origin = place
+            if not (folder / "images").is_dir():
+                raise ValueError(f"The test folder {folder} has no images/ directory")
+            # A test folder written in the run's own config is read exactly like its validation split.
+            if origin == "run":
+                folder = None
         device = requested_device(body)
         # Empty keeps the checkpoint's own setting; a number replaces it.
         border_ignore = body.get("border_ignore")
@@ -32,6 +44,7 @@ class InferenceViews:
             "checkpoint_id": body["checkpoint"],
             "source": source,
             "folder": str(folder) if folder else None,
+            "origin": origin,
             # The splits of a run are always labeled; a folder may be new, unlabeled data.
             "labeled": bool(body.get("labeled", True)) if source == "folder" else True,
             "device": device,

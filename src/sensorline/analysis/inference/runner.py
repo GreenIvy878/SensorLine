@@ -17,7 +17,7 @@ from ...runtime import choose_device
 from ..detections import below_threshold_detections, box_tensor, classify_sample
 
 
-SOURCES = ("val", "train", "folder")
+SOURCES = ("val", "test", "train", "folder")
 SWEEP_STEP = 0.05
 
 
@@ -54,7 +54,7 @@ def run_inference(request: dict, output_root: Path, report) -> dict:
     labeled = request["labeled"]
     result = evaluate_checkpoint(
         checkpoint, request["checkpoint"], device, saved["data"], request["source"],
-        runtime=saved["training"], folder=request["folder"] if request["source"] == "folder" else None,
+        runtime=saved["training"], folder=request["folder"],
         labeled=labeled, progress=report, border_ignore=request.get("border_ignore"),
     )
     rows, predictions, summary = result["rows"], result["predictions"], result["report"]

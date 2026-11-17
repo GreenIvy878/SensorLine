@@ -1,4 +1,5 @@
-/* Inference section: run a saved checkpoint on a dataset and read the result. */
+/* Inference section: run a saved checkpoint on its validation, test or training data, or on a folder, and read the
+   result. The setup stays on the left; the result, in three tabs, on the right. */
 'use strict';
 
 const inferenceUI = {
@@ -13,15 +14,16 @@ const inferenceUI = {
   state: null,
   message: '',
   resultKey: '',
+  tab: 'summary',
   frameFilter: 'all',
-  cell: null,
   page: 0,
   frame: null,
   showBelow: false,
   timer: null,
 };
-const FRAMES_PER_PAGE = 12;
-const SOURCE_TEXT = { val: 'validation set', train: 'training set', folder: 'folder' };
+const FRAMES_PER_PAGE = 5; // one row of five
+const FILTER_FROM = 8; // a text filter over the runs is offered when there are more than this many
+const SOURCE_TEXT = { val: 'validation set', test: 'test set', train: 'training set', folder: 'folder' };
 /* Overlay colors sit on grayscale images, not on the page, so they are fixed. */
 const BOX_COLORS = {
   found: '#6cff9a', missed: '#ff6b9d', tp: '#80c8ff', fp: '#ffb571', prediction: '#80c8ff', below: '#dcafff',
@@ -30,53 +32,84 @@ const BOX_COLORS = {
 
 function checkpointLabel(row) {
   const parts = [row.name];
-  if (row.f1 != null) parts.push('F1 ' + percentText(row.f1));
+  if (row.count_mae != null) parts.push('MAE ' + decimalText(row.count_mae, 2));
   if (row.timestamp) parts.push(new Date(row.timestamp).toLocaleDateString());
   return parts.join(' · ');
 }
 
+/* A folder is long and its end is what tells it apart: …\main_flow\test. The whole path stays in the title. */
+function shortPath(path) {
+  const parts = String(path).split(/[\\/]/).filter(Boolean);
+  return parts.length > 2 ? '…\\' + parts.slice(-2).join('\\') : String(path);
+}
+
+const selectedCheckpoint = () => inferenceUI.checkpoints?.find(row => row.id === inferenceUI.selected);
+
+/* The data a run can be evaluated on, with what each one means for the numbers. */
+function sourceChoices(row) {
+  const splits = row?.splits || {};
+  const own = key => {
+    const split = splits[key];
+    if (!split) return { path: '', missing: key === 'test' ? 'No test split in this run or in a model YAML' : 'Not recorded' };
+    if (!split.found) return { path: split.path, missing: 'Folder not found' };
+    return split;
+  };
+  const choice = (key, title, detail) => {
+    const split = own(key);
+    return { key, title, detail: split.missing || detail(split), path: split.path, disabled: Boolean(split.missing) };
+  };
+  return [
+    choice('val', 'Validation', () => ''),
+    choice('test', 'Test', split => split.origin === 'run' ? '' : `from ${split.origin}`),
+    choice('train', 'Training', () => ''),
+    { key: 'folder', title: 'Another folder', path: '', disabled: false, detail: '' }
+  ];
+}
+
+function sourceListHTML(row) {
+  const ui = inferenceUI;
+  return `<div class="choices" role="group" aria-label="Data to run on">` +
+    sourceChoices(row).map(item => `<button type="button" class="choice" data-source="${item.key}" ` +
+      `aria-pressed="${ui.source === item.key}" ${item.disabled ? 'disabled' : ''}>` +
+      `<b>${esc(item.title)}</b>${item.detail ? `<span>${esc(item.detail)}</span>` : ''}` +
+      `${item.path ? `<span class="path" title="${esc(item.path)}">${esc(shortPath(item.path))}</span>` : ''}` +
+      `</button>`).join('') + '</div>';
+}
+
 function inferenceFormHTML() {
   const ui = inferenceUI,
-    running = ui.state?.status === 'running';
-  const needle = ui.filter.toLowerCase();
-  const rows = ui.checkpoints.filter(row => row.name.toLowerCase().includes(needle) || row.id === ui.selected);
-  const sources = [
-    ['val', 'Validation set'],
-    ['train', 'Training set'],
-    ['folder', 'Folder']
-  ];
+    running = ui.state?.status === 'running',
+    needle = ui.filter.toLowerCase();
   if (!ui.checkpoints.length)
-    return empty('No trained checkpoint in the runs folder yet. Train one with train.py first.');
-  let html = `<section class="card"><div class="form-grid">
-      <label class="field"><span>Find a run<small>${rows.length} of ${ui.checkpoints.length}</small></span>` +
-        `<input id="inference-filter" value="${esc(ui.filter)}" placeholder="part of the name"></label>
-      <label class="field wide"><span>Checkpoint</span>` +
-        `<select id="inference-checkpoint">${rows.map(row => `<option value="${esc(row.id)}" ` +
-        `${row.id === ui.selected ? 'selected' : ''}>${esc(checkpointLabel(row))}</option>`).join('')}</select></label>
-      <label class="field"><span>Device</span><select id="inference-device">` +
-        `${['auto', 'cuda', 'cpu'].map(name => `<option ${name === ui.device ? 'selected' : ''}>${name}` +
-        `</option>`).join('')}</select></label>
-      <label class="field"><span>Ignore cut objects<small>samples</small></span>` +
-        `<input id="inference-border" type="number" min="0" step="0.5" value="${esc(ui.borderIgnore)}" ` +
-        `placeholder="as trained" title="Objects that a time edge of the frame cuts to fewer samples than this are not ` +
-        `counted, neither as found nor as missed. Empty uses the setting the checkpoint was trained with."></label>
-    </div>
-    <div class="actions"><span class="message">Run on</span>` +
-      `<div class="segmented" role="group" aria-label="Data">` +
-      `${sources.map(([key, label]) => `<button type="button" data-source="${key}" aria-pressed="${ui.source === key}` +
-      `">${label}</button>`).join('')}</div>
-      <span class="message">` +
-        `${ui.source === 'folder'
-          ? 'Any folder with an images/ directory; add labels/ to get quality metrics. ' +
-            'Pixels are scaled as the data.yaml of the dataset says; without one, as in training.'
-          : `The ${SOURCE_TEXT[ui.source]} this run was trained with.`}</span></div>`;
-  if (ui.source === 'folder') html += `<div class="form-grid"><label class="field wide"><span>Folder path</span>` +
-    `<input id="inference-folder" value="${esc(ui.folder)}" placeholder="C:\\data\\new_recordings"></label>
-      <label class="field checkbox"><input type="checkbox" id="inference-labeled" ${ui.labeled ? 'checked' : ''}` +
-        `> The folder has labels/</label></div>`;
-  html += `<div class="actions" style="margin-bottom:0">` +
-    `<button id="inference-run" class="primary" ${running ? 'disabled' : ''}>Run inference</button>` +
-    `<span class="message${ui.message ? ' error' : ''}" role="status">${esc(ui.message)}</span></div>`;
+    return empty('No trained checkpoint in the runs folder yet.');
+  const rows = ui.checkpoints.filter(row => row.name.toLowerCase().includes(needle) || row.id === ui.selected),
+    row = selectedCheckpoint();
+  let html = `<section class="card setup">` +
+    `<div class="form-section">` +
+    `${ui.checkpoints.length > FILTER_FROM ? `<input id="inference-filter" class="compact" value="${esc(ui.filter)}" ` +
+      `placeholder="Find a run: ${rows.length} of ${ui.checkpoints.length}" aria-label="Find a run by name">` : ''}` +
+    `<select id="inference-checkpoint" aria-label="Checkpoint">${rows.map(item => `<option value="${esc(item.id)}" ` +
+    `${item.id === ui.selected ? 'selected' : ''}>${esc(checkpointLabel(item))}</option>`).join('')}</select>` +
+    `</div>` +
+    `<div class="form-section">${sourceListHTML(row)}`;
+  if (ui.source === 'folder') html += `<div class="form-grid single" style="margin:12px 0 0">` +
+    `<label class="field"><span class="name">Folder path</span>` +
+    `<input id="inference-folder" value="${esc(ui.folder)}" placeholder="C:\\data\\new_recordings"></label>` +
+    `<label class="field checkbox"><input type="checkbox" id="inference-labeled" ${ui.labeled ? 'checked' : ''}> ` +
+    `The folder has labels/</label></div>`;
+  html += `</div><details class="more"><summary>More options</summary><div class="form-grid single">` +
+    `<label class="field"><span class="name">Device</span><select id="inference-device">` +
+    `${['auto', 'cuda', 'cpu'].map(name => `<option ${name === ui.device ? 'selected' : ''}>${name}</option>`).join('')}` +
+    `</select></label>` +
+    `<label class="field"><span class="name">Ignore cut objects<small>samples</small></span>` +
+    `<input id="inference-border" type="number" min="0" step="0.5" value="${esc(ui.borderIgnore)}" ` +
+    `placeholder="as trained" title="Objects that a time edge of the frame cuts to fewer samples than this are ` +
+    `counted neither as found nor as missed. Empty keeps the setting of the checkpoint."></label>` +
+    `</div></details>` +
+    `<div class="actions"><button id="inference-run" class="primary wide-button" ` +
+    `${running ? 'disabled' : ''}>${running ? 'Running…' : 'Run inference'}</button></div>` +
+    `<p class="message${ui.message ? ' error' : ''}" role="status" ` +
+    `style="margin:8px 0 0">${esc(ui.message)}</p>`;
   if (running) html += `<div style="margin-top:14px"><div class="progress-meta">` +
     `<span>Processed <strong>${ui.state.done}</strong> of ${ui.state.total || '…'} frames</span>` +
     `</div>${progressBar(ui.state.done, ui.state.total, 'Frames')}</div>`;
@@ -89,19 +122,26 @@ function renderInferenceForm() {
   if (!node) return;
   const focused = document.activeElement?.id,
     caret = document.activeElement?.selectionStart;
+  const open = node.querySelector('details.more')?.open;
+  // A run without a test split cannot be run on one: fall back instead of leaving a dead choice selected.
+  const row = selectedCheckpoint();
+  if (row && !sourceChoices(row).some(item => item.key === ui.source && !item.disabled)) ui.source = 'val';
   node.innerHTML = inferenceFormHTML();
   if (!$('inference-run')) return;
+  if (open) node.querySelector('details.more').open = true;
   if (focused && $(focused)) {
     $(focused).focus();
     if (caret != null && $(focused).setSelectionRange) $(focused).setSelectionRange(caret, caret);
   }
-  $('inference-filter').oninput = () => {
+  if ($('inference-filter')) $('inference-filter').oninput = () => {
     ui.filter = $('inference-filter').value;
     renderInferenceForm();
     ui.selected = $('inference-checkpoint').value || ui.selected;
   };
   $('inference-checkpoint').onchange = () => {
     ui.selected = $('inference-checkpoint').value;
+    ui.message = '';
+    renderInferenceForm();
   };
   $('inference-device').onchange = () => {
     ui.device = $('inference-device').value;
@@ -160,84 +200,6 @@ function scheduleInferencePoll() {
   }, 400);
 }
 
-/* Frames by labeled count (rows) and detected count (columns). Exact counts lie on
-   the diagonal in the first hue; every other cell is a miscount in the second. */
-function matrixCap(frames) {
-  // A few very crowded frames would stretch the grid with empty rows: counts above
-  // the level that covers 97% of the frames share one last "N+" row and column.
-  const largest = frames.map(frame => Math.max(frame.true_count, frame.predicted_count)).sort((a, b) => a - b);
-  const typical = largest[Math.floor((largest.length - 1) * 0.97)],
-    highest = largest[largest.length - 1];
-  return highest > typical + 1 ? typical + 1 : null;
-}
-
-function countMatrix(frames) {
-  const counts = new Map(),
-    cap = matrixCap(frames),
-    bucket = value => cap != null && value >= cap ? cap : value;
-  let lowest = Infinity,
-    highest = 0,
-    peak = 0;
-  for (const frame of frames) {
-    const labeled = bucket(frame.true_count),
-      detected = bucket(frame.predicted_count);
-    const key = labeled + ':' + detected,
-      value = (counts.get(key) || 0) + 1;
-    counts.set(key, value);
-    lowest = Math.min(lowest, labeled, detected);
-    highest = Math.max(highest, labeled, detected);
-    peak = Math.max(peak, value);
-  }
-  const name = value => value === cap ? `${cap}+` : String(value);
-  const size = highest - lowest + 1,
-    cell = Math.max(14, Math.min(34, Math.floor(440 / size))),
-    left = 46,
-    top = 30;
-  const base = cssValue('--surface-2'),
-    exact = cssValue('--series-1'),
-    wrong = cssValue('--series-2'),
-    ink = cssValue('--ink');
-  const luminance = color => {
-    const [r, g, b] = color.match(/\d+/g).map(Number);
-    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  };
-  // Drawn at its own size: a small matrix must not be blown up to the card width.
-  let svg = `<svg class="chart count-matrix" viewBox="0 0 ${left + size * cell + 8} ${top + size * cell + 30}` +
-    `" style="max-width:${left + size * cell + 8}px" role="img"` +
-    ` aria-label="Frames by labeled and detected object count">`;
-  for (let row = 0; row < size; row++)
-    for (let column = 0; column < size; column++) {
-      const labeled = lowest + row,
-        detected = lowest + column,
-        value = counts.get(labeled + ':' + detected) || 0;
-      const x = left + column * cell,
-        y = top + row * cell;
-      // Empty cells are a faint placeholder; a cell with one frame is already clearly tinted.
-      const fill = value ? mixColor(base, labeled === detected ? exact : wrong, 0.45 + 0.55 * value / peak) : base;
-      const selected = inferenceUI.cell && inferenceUI.cell[0] === labeled && inferenceUI.cell[1] === detected;
-      const tip = `${value} frame${value === 1 ? '' : 's'}: ${name(labeled)} labeled, ${name(detected)} detected`;
-      svg += `<rect x="${x + 1}" y="${y + 1}" width="${cell - 2}" height="${cell - 2}" rx="3" style="fill:${fill}"` +
-        `${value ? ` data-tip="${tip}" data-cell="${labeled}:${detected}" tabindex="0"` : ' opacity=".45"'}` +
-        `${selected ? ' class="selected"' : ''}/>`;
-      if (value && cell >= 20) svg += `<text x="${x + cell / 2}" y="${y + cell / 2 + 4}` +
-        `" text-anchor="middle" style="fill:${luminance(fill) > 0.6 ? ink : '#fff'};pointer-events:none">${value}` +
-        `</text>`;
-    }
-  const every = size > 16 ? 2 : 1;
-  for (let index = 0; index < size; index += every) {
-    svg += `<text x="${left + index * cell + cell / 2}" y="${top - 8}" text-anchor="middle">${name(lowest + index)}` +
-      `</text><text x="${left - 8}" y="${top + index * cell + cell / 2 + 4}" text-anchor="end">` +
-      `${name(lowest + index)}</text>`;
-  }
-  svg += `<text class="axis-title" x="${left + size * cell / 2}" y="${top + size * cell + 22}` +
-    `" text-anchor="middle">Detected objects</text><text class="axis-title" transform="translate(12 ` +
-    `${top + size * cell / 2}) rotate(-90)" text-anchor="middle">Labeled objects</text></svg>`;
-  return svg + `<div class="chart-legend"><span><i style="background:var(--series-1)"></i>Exact count</span><span>` +
-    `<i style="background:var(--series-2)"></i>Miscount</span></div>` +
-    `<p class="legend">Rows are the labeled count of a frame, columns the detected count; a stronger cell holds more ` +
-    `frames. Select a cell to list its frames below.</p>`;
-}
-
 function frameFilters(labeled) {
   return labeled ?
     [
@@ -258,13 +220,6 @@ function visibleFrames(state) {
     filters = frameFilters(state.labeled);
   const chosen = filters.find(item => item[0] === ui.frameFilter) || filters[0];
   let frames = state.frames.filter(chosen[2]);
-  if (ui.cell) {
-    // The last row and column of the matrix collect every count from the cap upwards.
-    const cap = matrixCap(state.frames),
-      bucket = value => cap != null && value >= cap ? cap : value;
-    frames = frames.filter(frame =>
-      bucket(frame.true_count) === ui.cell[0] && bucket(frame.predicted_count) === ui.cell[1]);
-  }
   if (ui.frameFilter === 'busy') frames = [...frames].sort((a, b) => b.predicted_count - a.predicted_count);
   else if (ui.frameFilter !== 'all') frames = [...frames].sort((a, b) => (b.fp + b.fn) - (a.fp + a.fn));
   return frames;
@@ -310,9 +265,19 @@ function boxLegend(labeled, ignoring = false) {
 }
 const frameURL = id => '/api/inference/sample?id=' + encodeURIComponent(id);
 
+/* The line under a thumbnail: the frame, then what the model did with it. */
+function frameCaption(sample, frame) {
+  if (!sample.labeled) return `<b>${esc(frame.id)}</b><span>${frame.predicted_count} object` +
+    `${frame.predicted_count === 1 ? '' : 's'} detected</span>`;
+  const notes = [`${frame.predicted_count} detected of ${frame.true_count} labeled`];
+  if (frame.fp) notes.push(`${frame.fp} false alarm${frame.fp === 1 ? '' : 's'}`);
+  if (frame.fn) notes.push(`${frame.fn} missed`);
+  return `<b>${esc(frame.id)}</b><span class="${frame.fp + frame.fn ? 'bad' : ''}">${esc(notes.join(' · '))}</span>`;
+}
+
 async function fillFrameGallery(frames) {
   const container = $('inference-gallery'),
-    key = inferenceUI.resultKey + inferenceUI.page + inferenceUI.frameFilter + String(inferenceUI.cell);
+    key = inferenceUI.resultKey + inferenceUI.page + inferenceUI.frameFilter ;
   if (!container) return;
   container.dataset.key = key;
   for (const frame of frames) {
@@ -329,11 +294,12 @@ async function fillFrameGallery(frames) {
     canvas.className = 'thumbnail';
     paintInferenceFrame(canvas, sample, false, false);
     button.className = 'thumb-button';
-    button.textContent = sample.labeled ? `${frame.id} · ${frame.predicted_count} of ${frame.true_count}` +
-      `${frame.fp ? ` · ${frame.fp} false` : ''}${frame.fn ? ` · ${frame.fn} missed` : ''}` : `${frame.id} · ` +
-      `${frame.predicted_count} object${frame.predicted_count === 1 ? '' : 's'}`;
+    button.innerHTML = frameCaption(sample, frame);
+    button.setAttribute('aria-pressed', String(inferenceUI.frame === frame.id));
     button.onclick = () => {
       inferenceUI.frame = frame.id;
+      container.querySelectorAll('.thumb-button').forEach(node => node.setAttribute('aria-pressed', 'false'));
+      button.setAttribute('aria-pressed', 'true');
       showInferenceFrame();
     };
     item.append(canvas, button);
@@ -343,7 +309,11 @@ async function fillFrameGallery(frames) {
 async function showInferenceFrame() {
   const ui = inferenceUI,
     node = $('inference-frame');
-  if (!node || !ui.frame) return;
+  if (!node) return;
+  if (!ui.frame) {
+    node.innerHTML = '';
+    return;
+  }
   let sample;
   try {
     sample = await request(frameURL(ui.frame));
@@ -382,32 +352,26 @@ async function showInferenceFrame() {
   node.scrollIntoView({ block: 'nearest' });
 }
 
+/* The Frames tab: filters, one page of thumbnails, and the frame that was opened. */
 function renderFrames(state) {
   const ui = inferenceUI,
     frames = visibleFrames(state),
     pages = Math.max(1, Math.ceil(frames.length / FRAMES_PER_PAGE));
   ui.page = Math.min(ui.page, pages - 1);
   const chips = frameFilters(state.labeled).map(([key, label]) => `<button type="button" data-filter="${key}` +
-    `" aria-pressed="${ui.frameFilter === key}">${label}</button>`).join('') +
-    (ui.cell ? `<button type="button" id="inference-cell" aria-pressed="true" title="Remove this filter">` +
-      `${ui.cell[0]} labeled, ${ui.cell[1]} detected ×</button>` : '');
-  $('inference-frames').innerHTML = card('Frames', `<div class="controls"><div class="chips">${chips}</div>` +
-    `<span class="toolbar-spacer"></span>
+    `" aria-pressed="${ui.frameFilter === key}">${label}</button>`).join('');
+  $('inference-panel').innerHTML = card('Frames', `<div class="controls"><div class="chips">${chips}</div>` +
+    `<span class="spacer"></span>
       <button id="inference-prev" ${ui.page === 0 ? 'disabled' : ''}>Previous</button>` +
         `<span class="muted">${frames.length} frames · page ${ui.page + 1} of ${pages}</span>` +
         `<button id="inference-next" ${ui.page + 1 >= pages ? 'disabled' : ''}>Next</button></div>
     ${frames.length ? '<div id="inference-gallery" class="gallery"></div>' : empty('No frame matches this filter.')}` +
       `${boxLegend(state.labeled, state.evaluation.border_ignore > 0)}`) + '<div id="inference-frame"></div>';
-  $('inference-frames').querySelectorAll('[data-filter]').forEach(button => button.onclick = () => {
+  $('inference-panel').querySelectorAll('[data-filter]').forEach(button => button.onclick = () => {
     ui.frameFilter = button.dataset.filter;
     ui.page = 0;
     renderFrames(state);
   });
-  if ($('inference-cell')) $('inference-cell').onclick = () => {
-    ui.cell = null;
-    ui.page = 0;
-    renderInferenceResult(true);
-  };
   $('inference-prev').onclick = () => {
     ui.page--;
     renderFrames(state);
@@ -420,18 +384,22 @@ function renderFrames(state) {
   showInferenceFrame();
 }
 
-function labeledResultHTML(state) {
+/* The Summary tab of a labeled result: the four numbers, then how the objects and the frames came out. */
+function labeledSummaryHTML(state) {
   const metrics = state.metrics,
     detected = metrics.tp + metrics.fp,
     exact = Math.round(metrics.exact_count_accuracy * metrics.samples);
-  const bias = Math.abs(metrics.count_bias) < 0.005 ? 'no systematic over- or undercount' :
-    `${metrics.count_bias > 0 ? 'over' : 'under'}counts by ${decimalText(Math.abs(metrics.count_bias), 2)} per frame`;
   const tiles = tile('Objects counted', String(detected), `${metrics.objects} labeled`) +
-    tile('Frames with the exact count', percentText(metrics.exact_count_accuracy), `${exact} of ${metrics.samples}` +
-      ` frames`) +
-    tile('Count error per frame (MAE)', decimalText(metrics.count_mae), bias) +
+    tile('Exact-count frames', percentText(metrics.exact_count_accuracy), `${exact} of ${metrics.samples} frames`) +
+    tile('Count MAE', decimalText(metrics.count_mae), 'mean error per frame') +
     tile('F1', percentText(metrics.f1), `precision ${percentText(metrics.precision)} · recall ` +
       `${percentText(metrics.recall)}`);
+  return `<div class="metrics">${tiles}</div>` + card('Found, missed and false alarms',
+    `<div class="fill">${tray(metrics.tp, metrics.fp, metrics.fn)}</div>`);
+}
+
+/* The Threshold tab: what the confidence threshold does to precision, recall and F1, with the numbers behind it. */
+function thresholdHTML(state) {
   const saved = state.evaluation.confidence;
   const sweep = plot({
     id: 'sweep',
@@ -442,18 +410,27 @@ function labeledResultHTML(state) {
     xLabel: 'Confidence threshold',
     percent: true,
     label: 'Precision, recall and F1 by confidence threshold',
-    series: QUALITY_SERIES,
+    series: curveSeries.quality.map(series => ({ ...series, key: series.key.replace('val_', '') })),
     title: row => `Confidence ≥ ${row.confidence}`,
     marker: { x: saved, label: `saved ${saved}` }
   });
-  // Two short cards share the left column; the taller matrix takes the right one.
-  return `<div class="metrics">${tiles}</div><div class="grid"><div class="stack">
-    ${card('Found, missed and false alarms', tray(metrics.tp, metrics.fp, metrics.fn))}
-    ${card('Effect of the confidence threshold, %', sweep, state.request.source === 'val'
-      ? 'Computed on the validation set that also selected the checkpoint, so the best threshold here is optimistic.'
-      : 'The same detections, accepted at other thresholds. The model and the NMS threshold are unchanged.')}
-    </div>${card('Count agreement by frame', countMatrix(state.frames))}</div>`;
+  const note = state.request.source === 'val' ?
+    'Computed on the validation set that also chose the checkpoint, so the best threshold here is optimistic.' :
+    'The same detections, accepted at other thresholds. The model and the NMS threshold are unchanged.';
+  const rows = table([
+    ['Confidence ≥', 'confidence'],
+    ['Precision', 'precision', percentText],
+    ['Recall', 'recall', percentText],
+    ['F1', 'f1', percentText],
+    ['Found', 'tp'],
+    ['False alarms', 'fp'],
+    ['Missed', 'fn'],
+    ['Count MAE', 'count_mae', value => decimalText(value)]
+  ], state.sweep, row => row.confidence === saved, true);
+  return card('Effect of the confidence threshold', sweep +
+    `<details class="plain"><summary>Table of the same numbers</summary>${rows}</details>`, note);
 }
+
 /* How many frames hold 0, 1, 2… detected objects: one thin column per count. */
 function countColumns(counts) {
   const highest = Math.max(...counts),
@@ -491,7 +468,7 @@ function countColumns(counts) {
   return svg;
 }
 
-function unlabeledResultHTML(state) {
+function unlabeledSummaryHTML(state) {
   const counts = state.frames.map(frame => frame.predicted_count),
     total = counts.reduce((sum, value) => sum + value, 0);
   return `<div class="metrics">${tile('Objects counted', String(total))}${tile('Frames', String(counts.length))}` +
@@ -509,13 +486,63 @@ function signalText(preprocessing) {
     `${preprocessing.source.split(/[\\/]/).pop()} describes this data`);
 }
 
+function resultHeadHTML(state) {
+  const ui = inferenceUI,
+    checkpoint = ui.checkpoints?.find(row => row.id === state.request.checkpoint_id),
+    thresholds = state.evaluation;
+  const chips = [
+    `epoch ${state.checkpoint_epoch}`, `${state.frames.length} frames`, `confidence ≥ ${thresholds.confidence}`,
+    `NMS IoU ${thresholds.nms_iou}`, ...(state.labeled ? [`correct at IoU ≥ ${thresholds.match_iou}`] : []),
+    ...(thresholds.border_ignore > 0 ? [`cut objects under ${thresholds.border_ignore} samples not counted`] : []),
+    state.device
+  ];
+  const where = [
+    ['Predictions and metrics', state.output_directory, true],
+    ['Data', state.data_root, true],
+    ...(state.request.source === 'folder' ? [['Pixels', signalText(state.preprocessing), false]] : [])
+  ];
+  return `<section class="card result-head"><div class="run-head"><h3>${esc(checkpoint ? checkpoint.name : 'Checkpoint')}` +
+    ` on the ${esc(SOURCE_TEXT[state.request.source])}</h3>` +
+    `<span class="spacer"></span>${checkpoint ? `<button id="inference-open-run">Open the run</button>` : ''}</div>` +
+    `<ul class="facts">${chips.map(text => `<li class="chip">${esc(text)}</li>`).join('')}</ul>` +
+    `<details class="plain"><summary>Where the files are</summary><dl class="kv" style="margin-top:10px">` +
+    `${where.map(([label, value, mono]) => `<dt>${esc(label)}</dt><dd${mono ? ' class="mono"' : ''}>` +
+      `${esc(value)}</dd>`).join('')}</dl></details></section>`;
+}
+
+function resultTabs(state) {
+  const tabs = [['summary', 'Summary']];
+  if (state.labeled) tabs.push(['threshold', 'Confidence threshold']);
+  tabs.push(['frames', 'Frames', state.frames.length]);
+  return tabs;
+}
+
+/* The body of the open tab; switching tabs redraws only this. */
+function renderResultPanel() {
+  const ui = inferenceUI,
+    state = ui.state,
+    panel = $('inference-panel');
+  if (!panel || !state || state.status !== 'completed') return;
+  if (!resultTabs(state).some(([key]) => key === ui.tab)) ui.tab = 'summary';
+  document.querySelectorAll('[data-result-tab]').forEach(button =>
+    button.setAttribute('aria-selected', String(button.dataset.resultTab === ui.tab)));
+  if (ui.tab === 'frames') {
+    renderFrames(state);
+    return;
+  }
+  panel.innerHTML = ui.tab === 'threshold' ? thresholdHTML(state) :
+    state.labeled ? labeledSummaryHTML(state) : unlabeledSummaryHTML(state);
+}
+
 function renderInferenceResult(force = false) {
   const ui = inferenceUI,
     state = ui.state,
     node = $('inference-result');
   if (!node) return;
+  if ($('inference-head') && (!state || state.status !== 'completed')) $('inference-head').innerHTML = '';
   if (!state || state.status === 'running') {
-    if (!state) node.innerHTML = '';
+    node.innerHTML = state ? '' : `<div class="empty-state"><h3>No result yet</h3>` +
+      `<p>Choose a checkpoint and the data, then run inference.</p></div>`;
     return;
   }
   if (state.status === 'failed') {
@@ -526,48 +553,30 @@ function renderInferenceResult(force = false) {
   }
   if (!force && ui.resultKey === state.id && node.dataset.key === state.id) return;
   if (ui.resultKey !== state.id) {
+    ui.tab = 'summary';
     ui.frameFilter = 'all';
-    ui.cell = null;
     ui.page = 0;
     ui.frame = null;
   }
   ui.resultKey = state.id;
   node.dataset.key = state.id;
-  const checkpoint = ui.checkpoints?.find(row => row.id === state.request.checkpoint_id);
-  const thresholds = state.evaluation;
-  node.innerHTML = `<p class="legend"><strong>${esc(checkpoint ? checkpoint.name : 'Checkpoint')}</strong> (epoch ` +
-    `${esc(state.checkpoint_epoch)}) on the ${esc(SOURCE_TEXT[state.request.source])} · ${state.frames.length}` +
-    ` frames · confidence ≥ ${thresholds.confidence} · NMS IoU ${thresholds.nms_iou}` +
-    `${state.labeled ? ` · a detection is correct at IoU ≥ ${thresholds.match_iou}` : ''}` +
-    `${thresholds.border_ignore > 0 ? ` · objects cut by a frame edge and shorter than ${thresholds.border_ignore} samples are not counted` : ''}` +
-    ` · ${esc(state.device)}` +
-    `${state.request.source === 'folder' ? ` · ${esc(signalText(state.preprocessing))}` : ''}</p>` +
-    (state.labeled ? labeledResultHTML(state) : unlabeledResultHTML(state)) +
-    `<div id="inference-frames"></div><p class="legend">Predictions and metrics are saved in <span class="path">` +
-    `${esc(state.output_directory)}</span> · data: <span class="path">${esc(state.data_root)}</span></p>`;
-  node.querySelectorAll('[data-cell]').forEach(rect => {
-    const select = () => {
-      ui.cell = rect.dataset.cell.split(':').map(Number);
-      ui.frameFilter = 'all';
-      ui.page = 0;
-      renderInferenceResult(true);
-    };
-    rect.onclick = select;
-    rect.onkeydown = event => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        select();
-      }
-    };
+  $('inference-head').innerHTML = resultHeadHTML(state);
+  node.innerHTML = tabStrip(resultTabs(state), ui.tab, 'result-tab', 'Parts of the result') +
+    '<div id="inference-panel"></div>';
+  node.querySelectorAll('[data-result-tab]').forEach(button => button.onclick = () => {
+    ui.tab = button.dataset.resultTab;
+    renderResultPanel();
   });
-  renderFrames(state);
+  if ($('inference-open-run')) $('inference-open-run').onclick = () => openRun(state.request.checkpoint_id);
+  renderResultPanel();
 }
 
 async function renderInference() {
   const ui = inferenceUI;
-  $('content').innerHTML = '<h2>Inference</h2><p class="section-hint">Run a trained checkpoint on its own data or ' +
-    'on a new folder, and see what it counted, found and missed.</p>' +
-    '<div id="inference-form"><p>Loading…</p></div><div id="inference-result"></div>';
+  $('content').innerHTML = pageHeader('Inference', 'Run a trained checkpoint on its validation, test or training ' +
+    'data, or on a new folder, and see what it counted, found and missed.') +
+    '<div id="inference-head"></div>' +
+    '<div class="split"><div id="inference-form"><p>Loading…</p></div><div id="inference-result"></div></div>';
   try {
     if (!ui.checkpoints) ui.checkpoints = await request('/api/inference/checkpoints');
     if (!ui.state) ui.state = (await request('/api/inference/status')).inference;
@@ -576,8 +585,26 @@ async function renderInference() {
     return;
   }
   if (section !== 'Inference') return;
+  // The first visit shows the run that is on the screen of the server already: its checkpoint and its data.
+  if (!ui.synced && ui.state?.request) {
+    ui.selected = ui.state.request.checkpoint_id;
+    ui.source = ui.state.request.source;
+    ui.folder = ui.state.request.folder || '';
+  }
+  ui.synced = true;
   if (!ui.checkpoints.some(row => row.id === ui.selected)) ui.selected = ui.checkpoints[0]?.id || null;
   renderInferenceForm();
   renderInferenceResult(true);
   scheduleInferencePoll();
 }
+
+/* Other sections send you here with a run and the data to run it on. */
+function openInference(experimentId, source) {
+  inferenceUI.selected = experimentId;
+  if (source) inferenceUI.source = source;
+  inferenceUI.checkpoints = null;
+  inferenceUI.message = '';
+  setSection('Inference');
+}
+
+renderers.Inference = renderInference;

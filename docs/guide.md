@@ -69,6 +69,13 @@ count MAE, then mAP50, then loss. A run is repeatable bit for bit on the same
 device for the same seed; `--seed` overrides the YAML to repeat a model with
 several seeds. `--dry-run` validates everything and prints the plan.
 
+**Test split.** With `data.test` in the YAML (or a `test` folder in the dataset's `data.yaml`) every
+epoch also evaluates that split and writes `test_*` columns to the history and `test_metrics.json`
+for the best checkpoint. It only monitors: it does not choose the epoch, an Optuna trial or a
+parameter, and a run is bit for bit the same with and without it. `tools/make_toy_data.py`
+writes a test split of 80 frames (`--test 0` for none). Fine-tuning reports the test split of the
+new data the same way.
+
 **Optuna.** `--optuna configs/optuna.json` searches training, loss, augmentation
 and threshold parameters (never the architecture) on validation; the JSON names
 the objective metric and the ranges. Each trial is an ordinary run in
@@ -97,9 +104,9 @@ effect on synthetic data.
 
 ## Evaluation and comparison
 
-`test.py --checkpoint best.pt` evaluates on the YAML's validation, on a labeled
-folder (`--split test --data-dir <folder>`) or predicts counts for unlabeled frames
-(`--unlabeled --data-dir <folder>`). It writes `metrics.json`, `samples.csv`
+`test.py --checkpoint best.pt` evaluates on the YAML's validation, on its test
+split (`--split test`), on a labeled folder (`--split test --data-dir <folder>`) or
+predicts counts for unlabeled frames (`--unlabeled --data-dir <folder>`). It writes `metrics.json`, `samples.csv`
 (per frame) and `predictions.json`; the dashboard's Inference section runs the same code.
 
 `tools/compare_runs.py baseline other…` compares models evaluated on the same
@@ -148,14 +155,25 @@ It opens in the browser on the first free port from 8008 (`--port`, or
 statistics are shown; the YAMLs next to it and the runs under `--runs-root`
 (default `runs`) can be inspected. Sections:
 
-- **Inference**: a checkpoint on its own splits or any folder; counts, metrics,
-  a confidence sweep and every frame with its found, missed and false boxes.
-- **Experiments**: the runs, their training curves and model summaries.
+- **Data** (pages Overview, Samples, Sensors, Objects, Foreground / Background,
+  Train vs Val, Noise): sensor statistics, object sizes and overlaps, train/val drift
+  and duplicate frames.
+- **Inference**: a checkpoint on its validation, **test** or training split, or on any
+  folder; counts, metrics, a found / missed / false bar, the effect of the confidence
+  threshold and every frame with its boxes. A run trained without a test split is run on
+  the `test` folder of a model YAML next to `--config` when that YAML feeds the model
+  the same signal (the page names the YAML).
+- **Experiments**: the runs side by side (validation and test metrics, size, time);
+  a run opens into its results, curves, architecture and files, with buttons to run
+  it on its test split or to look at its model.
 - **Model**: parameters, MACs, receptive field and layer table of a YAML or a
   checkpoint; speed and memory measured on request.
-- **Dataset analysis** (Overview, Samples, Sensors, Spatial, Objects,
-  Foreground / Background, Train vs Val, Noise): sensor statistics, correlation
-  between sensors, object sizes and overlaps, train/val drift and duplicate frames.
+
+The menu lists the steps in the order they are taken.
+
+![Dashboard, Data: the Overview page of the toy training set](images/dashboard-data.png)
+
+![Dashboard, Model: size and cost of the toy architecture](images/dashboard-model.png)
 
 `tools/analyze.py --config <yaml>` writes the same data statistics as JSON.
 

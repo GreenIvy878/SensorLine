@@ -84,11 +84,7 @@ function modelFormHTML() {
   return `<section class="card"><div class="actions"><div class="segmented" role="group" aria-label="Model source">` +
     `${sources.map(([key, label]) => `<button type="button" data-model-source="${key}" aria-pressed="` +
     `${ui.source === key}">${label}</button>`).join('')}</div>
-      <span class="message">` +
-        `${ui.source === 'config'
-          ? 'The architecture of a YAML with freshly initialised weights. Size and cost do not depend on the weights.'
-          : 'A trained run: the same numbers, and a speed measurement with its real detections.'}` +
-        `</span></div>
+</div>
     <div class="form-grid" style="margin-bottom:0">
       <label class="field wide"><span>Model</span>${picker}</label>
       <label class="field"><span>Signal length T<small>time steps</small></span>` +
@@ -204,6 +200,8 @@ function benchmarkResultHTML(state) {
   let html = `<p class="legend">Measured: ${esc(r.label)} · ${esc(r.device)} · ${r.frames} validation frames of ` +
     `${esc(r.frame_shape_sensor_time.join(' × '))} from ${esc(r.data_val)} · PyTorch ${esc(r.torch)}</p>`;
   const warnings = [];
+  if (r.training_job_running) warnings.push('A training job was running during the measurement; it shares the ' +
+    'device, so all times are too slow.');
   if (!r.trained) warnings.push('Untrained weights produce almost no box candidates, so decoding and NMS ' +
     'are faster than with a trained model.');
   if (warnings.length) html += warnings.map(text => `<p class="error">${esc(text)}</p>`).join('');
@@ -336,9 +334,9 @@ function renderModelForm() {
 }
 async function renderModel() {
   const ui = modelUI;
-  $('content').innerHTML = `<h2>Model</h2><p class="section-hint">Size, cost and geometry of one detector, computed ` +
-    `from its architecture at once. Speed and memory are measured on real frames when you ask for it.</p>
-    <div id="model-form"><p class="legend">Loading models…</p></div><div id="model-summary"></div>` +
+  $('content').innerHTML = pageHeader('Model', 'Size, cost and geometry of one detector, computed from its ' +
+    'architecture at once. Speed and memory are measured on real frames when you ask for it.') +
+    `<div id="model-form"><p class="legend">Loading models…</p></div><div id="model-summary"></div>` +
       `<div id="model-benchmark"></div>`;
   try {
     const [options, bench] = await Promise.all([request('/api/model/options'), request('/api/model/benchmark')]);
@@ -359,3 +357,13 @@ async function renderModel() {
   loadModelSummary();
   scheduleBenchmarkPoll();
 }
+
+/* Other sections send you here with a trained run to look at. */
+function openModel(experimentId) {
+  modelUI.source = 'checkpoint';
+  modelUI.name = experimentId;
+  modelUI.summaryKey = '';
+  setSection('Model');
+}
+
+renderers.Model = renderModel;

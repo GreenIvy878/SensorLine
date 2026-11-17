@@ -1,17 +1,21 @@
-/* Workspace sections (Inference, Model): forms, progress, charts, outcome bars.
+/* Workspace sections (Training, Inference, Model): forms, progress, charts, outcome bars.
    Uses the roles of dashboard.css; no new colors. */
 
+.spacer { flex: 1; }
 .segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--surface-2); border-radius: 8px; }
 .segmented button { min-height: 30px; padding: 4px 14px; background: transparent; border-color: transparent; color: var(--ink-2); }
 .segmented button:hover { background: transparent; border-color: transparent; color: var(--ink); }
 .segmented button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: var(--shadow), 0 0 0 1px var(--line); }
 
-.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px 16px; margin: 0 0 16px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px 16px; align-items: start; margin: 0 0 16px; }
 .field { display: flex; flex-direction: column; align-items: stretch; gap: 5px; min-width: 0; }
 .field > span { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .field small { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The label keeps one line so every input in a row starts at the same height; its hint sits under the input. */
+.field > .name { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.field > .hint { white-space: normal; overflow: visible; line-height: 1.35; }
 .field input, .field select { width: 100%; }
-.field.checkbox { flex-direction: row; align-items: center; gap: 8px; padding-top: 22px; }
+.field.checkbox { min-height: 34px; margin-top: 0; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-small); background: var(--surface); align-self: end; }
 .field.checkbox input { width: 16px; }
 .field.wide { grid-column: span 2; }
 /* An edited value is marked on the control, with the saved value kept in its title. */
@@ -30,10 +34,6 @@
 .progress.thin { height: 4px; margin-top: 8px; }
 .progress-meta { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 6px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .progress-meta strong { color: var(--ink); }
-
-/* Tiles with and without a note keep label and value on the same lines. */
-.metric { justify-content: flex-end; }
-.metric small { order: -1; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .plot { position: relative; }
 .plot svg { cursor: crosshair; }
@@ -67,9 +67,6 @@
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chips button { min-height: 28px; padding: 2px 12px; border-radius: 999px; font-weight: 400; font-size: 13px; }
 .chips button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-wash); font-weight: 600; }
-.count-matrix { max-width: 520px; }
-.count-matrix rect { cursor: pointer; }
-.count-matrix rect.selected { stroke: var(--ink); stroke-width: 2; }
 .frame-detail { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 20px; align-items: start; }
 .frame-detail canvas { max-width: 420px; }
 .frame-facts { margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-2); }
@@ -88,3 +85,107 @@
 /* Model section: a share of the whole as a thin bar next to its percentage. */
 .share { display: inline-block; width: 64px; height: 6px; margin-right: 6px; vertical-align: middle; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
 .share i { display: block; height: 100%; background: var(--series-1); }
+
+/* Setup on the left, result on the right (Inference). The setup stays in view while the result scrolls. */
+.split { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.split > div { min-width: 0; }
+.setup { position: sticky; top: calc(var(--topbar-height) + 16px); margin-bottom: 0; }
+.setup h3 { font-size: 16px; margin-bottom: 16px; }
+.setup .form-section { margin-bottom: 18px; }
+.setup select, .setup input.compact { width: 100%; }
+.setup input.compact { margin-bottom: 8px; }
+.form-grid.single { grid-template-columns: 1fr; margin-bottom: 0; }
+.wide-button { width: 100%; min-height: 40px; }
+details.more { margin: 0; border-top: 1px solid var(--line); padding-top: 4px; }
+details.more > summary { padding: 8px 0; }
+details.more > .form-grid { margin-top: 6px; }
+details.plain { margin: 16px 0 0; }
+details.plain > summary { color: var(--ink-2); font-size: 13px; }
+
+/* Which data to run on: one choice is selected, each says what the numbers on it mean. */
+.choices { display: flex; flex-direction: column; gap: 6px; }
+.choice { display: block; width: 100%; min-height: 0; padding: 9px 12px; text-align: left; font-weight: 400;
+  background: transparent; border-color: var(--line); }
+.choice:hover:not(:disabled) { background: var(--surface-2); }
+.choice b { display: block; font-weight: 600; color: var(--ink); }
+.choice span { display: block; margin-top: 2px; font-size: 12px; line-height: 1.4; color: var(--ink-2); }
+.choice span.path { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.choice[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
+.choice:disabled { opacity: 1; background: transparent; }
+.choice:disabled b, .choice:disabled span { opacity: .5; }
+
+.result-head { margin-bottom: 16px; }
+.result-head .run-head { margin-bottom: 8px; }
+.empty-state { padding: 40px 28px; text-align: center; border: 1px dashed var(--line-strong); border-radius: var(--radius); }
+.empty-state h3 { margin-bottom: 8px; }
+.empty-state p { margin: 0 auto 14px; max-width: 56ch; }
+.thumb-button { display: flex; flex-direction: column; gap: 1px; }
+.thumb-button b { font-weight: 600; color: var(--ink); }
+.thumb-button span.bad { color: var(--critical); }
+.thumb-button[aria-pressed="true"] { background: var(--accent-wash); }
+
+/* Runs: one row each; long names and architectures are cut with the whole text in the title. */
+table.runs td.run-name { white-space: normal; min-width: 180px; }
+table.runs td.run-name small { display: block; }
+table.runs th, table.runs td { padding: 8px 10px; }
+table.runs td.arch { max-width: 170px; overflow: hidden; text-overflow: ellipsis; color: var(--ink-2); }
+table.runs td.row-actions { text-align: right; padding-right: 8px; }
+table.runs td.row-actions button { min-height: 28px; padding: 2px 10px; }
+button.sort { background: transparent; border: 0; padding: 0; min-height: 0; font: inherit; color: inherit; gap: 4px; }
+button.sort:hover { background: transparent; color: var(--ink); }
+button.sort span { font-size: 9px; color: var(--accent); }
+th.num button.sort { justify-content: flex-end; width: 100%; }
+.crumb { margin: 0 0 8px; }
+.crumb button { font-size: 13px; }
+.controls input.compact { width: 240px; }
+.controls .chips { flex: 0 1 auto; }
+
+@media (max-width: 1100px) {
+  .split { grid-template-columns: 1fr; }
+  .setup { position: static; }
+}
+
+#inference-gallery { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1100px) { #inference-gallery { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+/* Three charts in a row are drawn at about two thirds of their size: the text is set larger to read the same. */
+.grid.three .chart text { font-size: 15px; }
+.grid.three .chart .axis-title { font-size: 16px; }
+
+/* Inference: the setup and the tabs start on one line. The result decides the height: the setup is as tall as the
+   result beside it (it is compact enough to fit) and keeps its button at the bottom. */
+.split { align-items: stretch; }
+#inference-form { height: 0; min-height: 100%; display: flex; flex-direction: column; }
+#inference-form > .card { flex: 1; overflow: auto; margin-bottom: 0; }
+.setup { position: static; display: flex; flex-direction: column; padding: 16px 18px; }
+.setup > .actions { margin-top: auto; padding-top: 12px; }
+#inference-result { min-width: 0; min-height: 440px; display: flex; flex-direction: column; }
+#inference-result > .tabs { flex: none; }
+#inference-panel { flex: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+#inference-panel > .card { margin-bottom: 0; flex: 1 0 auto; display: flex; flex-direction: column; }
+#inference-panel > .card > .fill, #inference-panel > .card > .plot { margin: auto 0; }
+#inference-panel > .card > .box-legend { margin-top: auto; padding-top: 12px; }
+#inference-frame:empty { display: none; }
+@media (max-width: 1100px) { #inference-form { height: auto; } #inference-form > .card { flex: none; } #inference-result { min-height: 0; } }
+
+/* One line per data choice: the name, and the folder at its right. */
+.setup .choice { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; padding: 7px 12px; }
+.setup .choices { gap: 4px; }
+.setup .choice span { margin-top: 0; }
+.setup .choice span.path { flex: 1 1 0; min-width: 0; text-align: right; }
+.setup .choice span:not(.path) { flex-basis: 100%; order: 3; }
+.setup .form-section { margin-bottom: 10px; }
+.setup input.compact { min-height: 32px; margin-bottom: 6px; }
+.setup select { min-height: 32px; }
+.setup .form-section + .form-section, .setup .choices { margin-top: 10px; }
+
+.run-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.run-head h3 { margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+.run-head .spacer { flex: 1; }
+
+/* Status always carries its word; the dot only repeats it. */
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--ink-2); }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill[data-state="running"]::before { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.pill[data-state="completed"]::before { background: var(--good); }
+.pill[data-state="failed"]::before { background: var(--critical); }

@@ -27,7 +27,7 @@ from .data import build_dataset, dataset_fingerprint, dataset_signal_hashes
 from .evaluation import evaluate, evaluation_settings
 from .models import Detector
 from .runtime import choose_device, configure_reproducibility, make_loader
-from .trainer import build_trainer, open_run, record_failure, record_run_inputs
+from .trainer import build_test_dataset, build_trainer, open_run, record_failure, record_run_inputs
 from .validation import finite_number, require_mapping
 
 
@@ -285,6 +285,8 @@ def finetune_result(trainer, baseline: dict) -> dict:
     if best_epoch > 0:
         row = trainer.history[best_epoch - 1]
         kept = {"val": unprefixed(row, "val_"), "reference": unprefixed(row, "reference_")}
+        if trainer.test_loader is not None:
+            kept["test"] = unprefixed(row, "test_")
     return {
         "best_epoch": best_epoch,
         "base_kept": best_epoch == 0,
@@ -298,7 +300,8 @@ def print_baseline(report: dict) -> None:
     baseline, limits = report["baseline"], report["limits"]
     print(f"Base checkpoint: {report['base']['checkpoint']} (epoch {report['base']['epoch']})", flush=True)
     print(f"Replayed reference samples per epoch: {report['reference']['replay_per_epoch']}", flush=True)
-    for name, metrics in (("New validation", baseline["val"]), ("Reference validation", baseline["reference"])):
+    shown = (("New validation", "val"), ("Reference validation", "reference"), ("New test", "test"))
+    for name, metrics in ((title, baseline[key]) for title, key in shown if key in baseline):
         print(
             f"{name} with the base weights: f1={metrics['f1']:.4f} "
             f"count_mae={metrics['count_mae']:.4f}",
@@ -355,13 +358,14 @@ def _finetune(config: dict, options: dict, artifacts, selection: dict | None, un
     base = load_base(config, options, device)
     train_dataset = build_dataset(config["data"], "train")
     val_dataset = build_dataset(config["data"], "val")
+    test_dataset = build_test_dataset(config)
     reference = load_reference(base, with_train=options["replay_ratio"] > 0)
 
     model = Detector(config["model"]).to(device)
     model.load_state_dict(base["model"])
 
     provenance, parameter_count = record_run_inputs(
-        config, artifacts, model, device, train_dataset, val_dataset
+        config, artifacts, model, device, train_dataset, val_dataset, test_dataset
     )
     # train_fingerprint describes the new data only; replay is recorded here.
     provenance["finetune"] = {
@@ -382,10 +386,13 @@ def _finetune(config: dict, options: dict, artifacts, selection: dict | None, un
     check_count_limit(options["max_count_mae_rise"], len(reference["val"]))
     trainer = build_trainer(
         config, artifacts, model, device, training_samples, val_dataset,
-        provenance, selection, guard,
+        provenance, selection, guard, test_dataset=test_dataset,
     )
 
     baseline = {"val": trainer.validate()[0], "reference": guard.set_baseline(model)}
+    if test_dataset is not None:
+        # Monitored like the validation, but it neither decides an epoch nor the checkpoint.
+        baseline["test"] = trainer.validate_test()[0]
     # The base weights are the first candidate; an interrupted run keeps them too.
     trainer.save_best_checkpoint(0, baseline["val"])
     update_experiment(artifacts.directory, best_epoch=0, best_metrics=baseline["val"])

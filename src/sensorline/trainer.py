@@ -27,21 +27,35 @@ from .runtime import (
 )
 
 
-def build_provenance(config: dict, train_dataset, val_dataset) -> dict:
-    return {
+def build_test_dataset(config: dict):
+    """The test split of a config, or None when it has none.
+
+    The test split is monitored: it is evaluated after every epoch and reported, but it
+    never chooses the checkpoint, the Optuna trial or any parameter.
+    """
+    return build_dataset(config["data"], "test") if "test" in config["data"] else None
+
+
+def build_provenance(config: dict, train_dataset, val_dataset, test_dataset=None) -> dict:
+    provenance = {
         "train_fingerprint": dataset_fingerprint(train_dataset),
         "val_fingerprint": dataset_fingerprint(val_dataset),
         "signal": {key: config["data"][key] for key in ("type", "sensor_axis", "scale", "offset")},
         "evaluation": config["evaluation"],
     }
+    if test_dataset is not None:
+        provenance["test_fingerprint"] = dataset_fingerprint(test_dataset)
+    return provenance
 
 
-def build_history_row(epoch: int, train_losses: dict, val_metrics: dict) -> dict:
+def build_history_row(epoch: int, train_losses: dict, val_metrics: dict, test_metrics: dict | None = None) -> dict:
     row = {"epoch": epoch}
     for name, value in train_losses.items():
         row[f"train_loss_{name}"] = value
     for name, value in val_metrics.items():
         row[f"val_{name}"] = value
+    for name, value in (test_metrics or {}).items():
+        row[f"test_{name}"] = value
     return row
 
 
@@ -52,13 +66,20 @@ def print_run_summary(audit: dict, info: dict) -> None:
             "WARNING: identical signals occur in train and val; supplied split is preserved.",
             flush=True,
         )
+    for key, pair in (("train_test_duplicates", "train and test"), ("val_test_duplicates", "val and test")):
+        if audit.get(key):
+            print(f"WARNING: identical signals occur in {pair}; the test metrics are optimistic.", flush=True)
     print(info["structure"], flush=True)
     shapes = {key: value for key, value in info.items() if key != "structure"}
     print(json.dumps(shapes), flush=True)
 
 
 class Trainer:
-    """Train one model and select its checkpoint using validation metrics."""
+    """Train one model and select its checkpoint using validation metrics.
+
+    A test loader, when given, is evaluated after every epoch next to the validation
+    and reported; it takes no part in choosing the checkpoint.
+    """
 
     def __init__(
         self,
@@ -75,6 +96,7 @@ class Trainer:
         scheduler=None,
         ema: ModelEma | None = None,
         guard=None,
+        test_loader=None,
     ):
         self.model = model
         # Validation, checkpoints and reports use the averaged weights when EMA is on.
@@ -87,6 +109,7 @@ class Trainer:
         self.optimizer = optimizer
         self.train_loader = train_loader
         self.val_loader = val_loader
+        self.test_loader = test_loader
         self.device = device
         self.config = config
         self.artifacts = artifacts
@@ -155,6 +178,16 @@ class Trainer:
             criterion=self.criterion,
         )
 
+    def validate_test(self):
+        """Metrics, frames and predictions of the test split; the model is evaluated, not changed."""
+        return evaluate(
+            self.evaluated_model,
+            self.test_loader,
+            self.device,
+            self.eval_config,
+            criterion=self.criterion,
+        )
+
     def save_best_checkpoint(self, epoch: int, metrics: dict) -> None:
         rank = (metrics["count_mae"], -metrics["map50"], metrics["loss_total"])
         if self.selection is not None:
@@ -177,20 +210,27 @@ class Trainer:
         }
         torch.save(checkpoint, self.artifacts.checkpoint_path)
 
-    def record_progress(self, epoch: int, metrics: dict, parameter_count: int) -> None:
+    def record_progress(
+        self, epoch: int, metrics: dict, parameter_count: int, test_metrics: dict | None = None
+    ) -> None:
         progress = {
             "best_epoch": self.best_epoch,
             "final_metrics": metrics,
             "parameters": parameter_count,
             "training_seconds": sum(
-                row["train_seconds"] + row["val_seconds"] for row in self.history
+                row["train_seconds"] + row["val_seconds"] + row.get("test_seconds", 0)
+                for row in self.history
             ),
         }
         if self.best_epoch == epoch:
             progress["best_metrics"] = metrics
+            if test_metrics is not None:
+                progress["best_test_metrics"] = test_metrics
         update_experiment(self.artifacts.directory, **progress)
 
-    def print_epoch(self, epoch: int, train_losses: dict, metrics: dict) -> None:
+    def print_epoch(
+        self, epoch: int, train_losses: dict, metrics: dict, test_metrics: dict | None = None
+    ) -> None:
         print(
             f"epoch={epoch} "
             f"train_loss={train_losses['total']:.4f} "
@@ -200,6 +240,13 @@ class Trainer:
             f"best_epoch={self.best_epoch}",
             flush=True,
         )
+        if test_metrics is not None:
+            print(
+                f"  test_loss={test_metrics['loss_total']:.4f} "
+                f"test_count_mae={test_metrics['count_mae']:.4f} "
+                f"test_mAP50={test_metrics['map50']:.4f}",
+                flush=True,
+            )
 
     def save_final_validation(self, parameter_count: int) -> None:
         checkpoint = load_checkpoint(self.artifacts.checkpoint_path, self.device)
@@ -216,6 +263,11 @@ class Trainer:
         update_experiment(
             self.artifacts.directory, best_metrics=metrics, best_epoch=self.best_epoch
         )
+        if self.test_loader is not None:
+            # The weights of the best epoch are loaded already: the same ones the report above used.
+            test_metrics, test_rows, _ = self.validate_test()
+            self.artifacts.save_test({**report, "split": "test", "metrics": test_metrics}, test_rows)
+            update_experiment(self.artifacts.directory, best_test_metrics=test_metrics)
 
     def fit(self, epochs: int, parameter_count: int) -> Path:
         for epoch in range(1, epochs + 1):
@@ -228,13 +280,20 @@ class Trainer:
             if self.guard is not None:
                 verdict = self.guard.check(self.evaluated_model, epoch)
             val_seconds = perf_counter() - started
+            test_metrics = None
+            if self.test_loader is not None:
+                started = perf_counter()
+                test_metrics, _, _ = self.validate_test()
+                test_seconds = perf_counter() - started
 
-            row = build_history_row(epoch, train_losses, val_metrics)
+            row = build_history_row(epoch, train_losses, val_metrics, test_metrics)
             row.update(
                 train_seconds=train_seconds,
                 val_seconds=val_seconds,
                 learning_rate=self.optimizer.param_groups[0]["lr"],
             )
+            if test_metrics is not None:
+                row["test_seconds"] = test_seconds
             if verdict is not None:
                 row.update(verdict)
             self.history.append(row)
@@ -242,10 +301,11 @@ class Trainer:
             # A rejected epoch stays in the history but cannot become the checkpoint.
             if verdict is None or verdict["accepted"]:
                 self.save_best_checkpoint(epoch, val_metrics)
-            self.record_progress(epoch, val_metrics, parameter_count)
-            self.print_epoch(epoch, train_losses, val_metrics)
+            self.record_progress(epoch, val_metrics, parameter_count, test_metrics)
+            self.print_epoch(epoch, train_losses, val_metrics, test_metrics)
             print(
-                f"  train={train_seconds:.2f}s val={val_seconds:.2f}s",
+                f"  train={train_seconds:.2f}s val={val_seconds:.2f}s"
+                + (f" test={test_seconds:.2f}s" if test_metrics is not None else ""),
                 flush=True,
             )
 
@@ -286,13 +346,13 @@ def train(config: dict, name=None, selection: dict | None = None) -> Path:
 
 
 def record_run_inputs(
-    config: dict, artifacts: RunArtifacts, model, device, train_dataset, val_dataset
+    config: dict, artifacts: RunArtifacts, model, device, train_dataset, val_dataset, test_dataset=None
 ) -> tuple[dict, int]:
     """Describe the model, data and environment of a run; returns provenance and parameter count."""
     sensors, time_steps = train_dataset[0]["signal"].shape[-2:]
     info = model_info(model, (1, 1, sensors, time_steps))
-    audit = audit_sources(train_dataset, val_dataset)
-    provenance = build_provenance(config, train_dataset, val_dataset)
+    audit = audit_sources(train_dataset, val_dataset, test_dataset)
+    provenance = build_provenance(config, train_dataset, val_dataset, test_dataset)
     print_run_summary(audit, info)
 
     environment = environment_info(device, config["training"]["seed"])
@@ -316,6 +376,7 @@ def build_trainer(
     provenance: dict,
     selection: dict | None = None,
     guard=None,
+    test_dataset=None,
 ) -> Trainer:
     """Loss, optimizer, loaders and optional schedule and EMA around a model that is ready to train."""
     training = config["training"]
@@ -329,6 +390,8 @@ def build_trainer(
         training_samples = AugmentedDataset(training_samples, augmentation, background)
     train_loader = make_loader(training_samples, training, shuffle=True)
     val_loader = make_loader(val_dataset, training)
+    # Its own loader and generator: the test pass cannot change the random stream of training.
+    test_loader = make_loader(test_dataset, training) if test_dataset is not None else None
 
     # Both are None by default; training then follows the constant-rate path.
     scheduler = build_scheduler(optimizer, training, len(train_loader))
@@ -354,6 +417,7 @@ def build_trainer(
         scheduler=scheduler,
         ema=ema,
         guard=guard,
+        test_loader=test_loader,
     )
 
 
@@ -364,12 +428,14 @@ def _train(config: dict, artifacts: RunArtifacts, selection: dict | None = None)
 
     train_dataset = build_dataset(config["data"], "train")
     val_dataset = build_dataset(config["data"], "val")
+    test_dataset = build_test_dataset(config)
     model = Detector(config["model"]).to(device)
 
     provenance, parameter_count = record_run_inputs(
-        config, artifacts, model, device, train_dataset, val_dataset
+        config, artifacts, model, device, train_dataset, val_dataset, test_dataset
     )
     trainer = build_trainer(
-        config, artifacts, model, device, train_dataset, val_dataset, provenance, selection
+        config, artifacts, model, device, train_dataset, val_dataset, provenance, selection,
+        test_dataset=test_dataset,
     )
     return trainer.fit(training["epochs"], parameter_count)

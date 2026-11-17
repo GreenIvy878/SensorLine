@@ -1,4 +1,9 @@
-"""Sequential Optuna search using the existing train/validation artifact pipeline."""
+"""Sequential Optuna search using the existing train/validation artifact pipeline.
+
+The validation split alone decides which trial is best. A test split, when the data
+section has one, is evaluated by every trial and recorded next to the objective, so a
+search shows how the test metric follows the validation one; it never steers the search.
+"""
 
 from copy import deepcopy
 from pathlib import Path
@@ -20,7 +25,8 @@ def compatible_base_config(config: dict) -> dict:
     if "augmentation" in result["training"]:
         # Missing new keys mean disabled transforms, matching old study manifests.
         result["training"]["augmentation"] = augmentation_options(result["training"]["augmentation"])
-    # Independent test is never loaded or used by a search.
+    # The test split does not steer a search, so its path does not decide whether a study
+    # may be resumed; test_fingerprint guards the data instead.
     result["data"].pop("test", None)
     return result
 
@@ -35,6 +41,10 @@ def search_definition(search: dict) -> dict:
 def data_fingerprints(config: dict) -> dict:
     return {split: dataset_fingerprint(build_dataset(config["data"], split))
             for split in ("train", "val")}
+
+
+def test_fingerprint(config: dict) -> str | None:
+    return dataset_fingerprint(build_dataset(config["data"], "test")) if "test" in config["data"] else None
 
 
 def prepare_study_directory(config: dict, search: dict, resume: bool) -> tuple[Path, dict]:
@@ -52,6 +62,7 @@ def prepare_study_directory(config: dict, search: dict, resume: bool) -> tuple[P
         "base_config": deepcopy(config),
         "search_definition": search_definition(search),
         "data_fingerprints": fingerprints,
+        "test_fingerprint": test_fingerprint(config),
     }
     if resume:
         stored = read_json_object(directory / "study_manifest.json")
@@ -63,6 +74,10 @@ def prepare_study_directory(config: dict, search: dict, resume: bool) -> tuple[P
             raise ValueError("Cannot resume: base model, training or data configuration changed")
         if stored.get("data_fingerprints") != fingerprints:
             raise ValueError("Cannot resume: train/val data fingerprints changed")
+        # A study begun without a test split (or before there was one) may be resumed with one:
+        # its earlier trials simply have no test value.
+        if stored.get("test_fingerprint") not in (None, manifest["test_fingerprint"]):
+            raise ValueError("Cannot resume: test data changed")
         manifest = stored
     else:
         directory.mkdir(parents=True, exist_ok=True)
@@ -118,6 +133,9 @@ def export_best_parameters(study, directory: Path, manifest: dict, objective: di
         "base_config": manifest["base_config"],
         "data_fingerprints": manifest["data_fingerprints"],
     }
+    if "test_value" in best.user_attrs:
+        # The same metric of the best-validation trial on the test split; informational only.
+        saved["test_value"] = best.user_attrs["test_value"]
     write_json(directory / "best_params.json", saved)
     return saved
 
@@ -161,6 +179,10 @@ def run_trial(trial, config: dict, search: dict, selection: dict, directory: Pat
     actual_run = train(trial_config, name=trial_name, selection=selection)
     report = read_json_object(actual_run / "metrics.json")
     value = report["metrics"][selection["metric"]]
+    test_report = actual_run / "test_metrics.json"
+    if test_report.is_file():
+        # Monitoring only: recorded with the trial, never returned to the sampler.
+        trial.set_user_attr("test_value", read_json_object(test_report)["metrics"][selection["metric"]])
     trial.set_user_attr("run_dir", str(actual_run))
     trial.set_user_attr("checkpoint", str(actual_run / "best.pt"))
     trial.set_user_attr("best_epoch", report["best_epoch"])

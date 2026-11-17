@@ -210,21 +210,36 @@ def dataset_signal_hashes(dataset):
     return hashes, object_count
 
 
-def audit_sources(train, val) -> dict:
+def shared_signals(first_hashes, second_hashes, first_name, second_name) -> list[dict]:
+    return [
+        {first_name: first_hashes[digest], second_name: second_hashes[digest]}
+        for digest in sorted(first_hashes.keys() & second_hashes.keys())
+    ]
+
+
+def audit_sources(train, val, test=None) -> dict:
+    """Sizes and identical frames of the splits; the test keys exist only when there is a test split."""
     train_hashes, train_objects = dataset_signal_hashes(train)
     val_hashes, val_objects = dataset_signal_hashes(val)
-    duplicates = []
-    for digest in sorted(train_hashes.keys() & val_hashes.keys()):
-        duplicates.append({"train": train_hashes[digest], "val": val_hashes[digest]})
-    return {
+    audit = {
         "train_samples": len(train),
         "val_samples": len(val),
         "train_boxes": train_objects,
         "val_boxes": val_objects,
         "train_duplicate_images": sum(len(names) - 1 for names in train_hashes.values()),
         "val_duplicate_images": sum(len(names) - 1 for names in val_hashes.values()),
-        "cross_split_duplicates": duplicates,
+        "cross_split_duplicates": shared_signals(train_hashes, val_hashes, "train", "val"),
     }
+    if test is not None:
+        test_hashes, test_objects = dataset_signal_hashes(test)
+        audit.update(
+            test_samples=len(test),
+            test_boxes=test_objects,
+            test_duplicate_images=sum(len(names) - 1 for names in test_hashes.values()),
+            train_test_duplicates=shared_signals(train_hashes, test_hashes, "train", "test"),
+            val_test_duplicates=shared_signals(val_hashes, test_hashes, "val", "test"),
+        )
+    return audit
 
 
 def dataset_fingerprint(dataset) -> str:

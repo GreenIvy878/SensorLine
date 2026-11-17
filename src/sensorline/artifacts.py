@@ -122,3 +122,8 @@ class RunArtifacts:
         write_json(self.directory / "metrics.json", report)
         write_rows(self.directory / "validation_samples.csv", sample_rows)
         write_json(self.directory / "validation_predictions.json", predictions)
+
+    def save_test(self, report, sample_rows) -> None:
+        """The best checkpoint on the test split: monitored during training, never used to choose anything."""
+        write_json(self.directory / "test_metrics.json", report)
+        write_rows(self.directory / "test_samples.csv", sample_rows)

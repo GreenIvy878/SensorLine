@@ -1,4 +1,4 @@
-/* Pieces shared by the workspace sections (Inference, Model):
+/* Pieces shared by the workspace sections (Training, Inference, Model):
    number formats, line charts with a crosshair tooltip, outcome bars, tiles. */
 'use strict';
 
@@ -235,9 +235,74 @@ function progressBar(done, total, label, thin = false) {
 const tile = (label, value, note = '') => `<div class="metric"><strong>${esc(value)}</strong>` +
   `<span>${esc(label)}</span>${note ? `<small>${esc(note)}</small>` : ''}</div>`;
 
-/* Precision, recall and F1 of a threshold sweep, in the order and colors of the charts. */
-const QUALITY_SERIES = [
-  { name: 'Precision', key: 'precision', color: 'var(--series-1)' },
-  { name: 'Recall', key: 'recall', color: 'var(--series-2)' },
-  { name: 'F1', key: 'f1', color: 'var(--series-3)' }
-];
+/* Training curves; Inference reuses the quality series for its threshold sweep. */
+const curveSeries = {
+  loss: [
+    { name: 'Train', key: 'train_loss_total', color: 'var(--series-1)' },
+    { name: 'Validation', key: 'val_loss_total', color: 'var(--series-2)' }
+  ],
+  quality: [
+    { name: 'Precision', key: 'val_precision', color: 'var(--series-1)' },
+    { name: 'Recall', key: 'val_recall', color: 'var(--series-2)' },
+    { name: 'F1', key: 'val_f1', color: 'var(--series-3)' }
+  ],
+  count: [{ name: 'Count MAE', key: 'val_count_mae', color: 'var(--series-1)' }],
+};
+
+/* Runs: a status as a word with a dot, the test columns of a history, the curves and the epoch table that
+   Training and Experiments both draw. */
+const pill = (state, text) => `<span class="pill" data-state="${esc(state)}">${esc(text)}</span>`;
+const STATUS_TEXT = { running: 'Running', completed: 'Completed', failed: 'Failed', stopped: 'Stopped' };
+
+/* The run has a test split: its history rows carry test_* columns. */
+const hasTest = history => history.some(row => 'test_f1' in row);
+/* One test line per chart, in the colour validation never uses: the whole quality trio would drown the plot. */
+const TEST_SERIES = {
+  loss: { name: 'Test', key: 'test_loss_total', color: 'var(--series-4)' },
+  quality: { name: 'Test F1', key: 'test_f1', color: 'var(--series-4)' },
+  count: { name: 'Test count MAE', key: 'test_count_mae', color: 'var(--series-4)' }
+};
+const curveSeriesFor = (kind, history) =>
+  hasTest(history) && TEST_SERIES[kind] ? [...curveSeries[kind], TEST_SERIES[kind]] : curveSeries[kind];
+
+function curve(id, job, kind, label, options = {}) {
+  return plot({
+    id,
+    rows: job.history,
+    x: 'epoch',
+    xDomain: [1, Math.max(job.epochs || 1, job.history.length, 2)],
+    xLabel: 'Epoch',
+    label,
+    series: curveSeriesFor(kind, job.history),
+    title: row => `Epoch ${row.epoch}`,
+    emptyText: 'The first epoch has not finished yet.',
+    marker: job.best_epoch ? { x: job.best_epoch, label: 'best checkpoint' } : null,
+    ...options
+  });
+}
+
+function historyTable(history) {
+  const columns = [
+    ['Epoch', 'epoch'],
+    ['Train loss', 'train_loss_total'],
+    ['Val loss', 'val_loss_total'],
+    ['Precision', 'val_precision'],
+    ['Recall', 'val_recall'],
+    ['F1', 'val_f1'],
+    ['Count MAE', 'val_count_mae'],
+    ['mAP50', 'val_map50'],
+    ['mAP50-95', 'val_map50_95'],
+    ['TP', 'val_tp'],
+    ['FP', 'val_fp'],
+    ['FN', 'val_fn'],
+    ['Learning rate', 'learning_rate', value => esc(compactText(value))]
+  ];
+  // Fine-tuning rows also carry the verdict of the reference validation.
+  if (history.some(row => 'accepted' in row)) columns.splice(7, 0, ['Reference F1', 'reference_f1'],
+    ['Reference count MAE', 'reference_count_mae'], ['Accepted', 'accepted', value => value ? 'yes' : 'no']);
+  // The test split follows the validation columns it mirrors.
+  if (hasTest(history)) columns.splice(columns.findIndex(column => column[1] === 'val_fn') + 1, 0,
+    ['Test loss', 'test_loss_total'], ['Test F1', 'test_f1'], ['Test count MAE', 'test_count_mae'],
+    ['Test mAP50', 'test_map50']);
+  return table(columns, [...history].reverse());
+}

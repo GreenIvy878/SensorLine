@@ -82,8 +82,8 @@ def write_split(root: Path, frames: int, rng, sensors, lengths, brightness) -> N
 
 
 def make_toy_dataset(root, train=300, val=80, seed=0, sensors=DEFAULT_SENSORS,
-                     lengths=DEFAULT_LENGTHS, brightness=DEFAULT_BRIGHTNESS) -> Path:
-    """Write train/ and val/ (images/ and labels/) and data.yaml under a new or empty `root`."""
+                     lengths=DEFAULT_LENGTHS, brightness=DEFAULT_BRIGHTNESS, test=0) -> Path:
+    """Write train/, val/ and, when `test` > 0, test/ (images/ and labels/) and data.yaml under a new or empty `root`."""
     if sensors < 8:
         raise ValueError("A toy frame needs at least 8 sensors")
     if not 1 <= lengths[0] <= lengths[1] <= TIME:
@@ -98,5 +98,8 @@ def make_toy_dataset(root, train=300, val=80, seed=0, sensors=DEFAULT_SENSORS,
     write_split(root / "val", val, rng, sensors, lengths, brightness)
     description = {"data": {"type": "yolo_images", "train": "./train", "val": "./val",
                             "sensor_axis": "x", "sensors": sensors, "scale": 255.0, "offset": 0.0}}
+    if test:
+        write_split(root / "test", test, rng, sensors, lengths, brightness)
+        description["data"]["test"] = "./test"
     (root / "data.yaml").write_text(yaml.safe_dump(description, sort_keys=False), encoding="utf-8")
     return root

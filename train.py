@@ -34,7 +34,7 @@ def parse_arguments():
              "with data.yaml or that file",
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--optuna", metavar="SEARCH.json", help="Run a validation-only parameter search")
+    mode.add_argument("--optuna", metavar="SEARCH.json", help="Run a parameter search ranked on validation (a test split is only recorded)")
     mode.add_argument("--best-params", metavar="BEST.json", help="Train once using saved best parameters")
     parser.add_argument("--trials", type=int, help="Override search trial count; additional trials with --resume")
     parser.add_argument("--resume", action="store_true", help="Continue an existing Optuna study")

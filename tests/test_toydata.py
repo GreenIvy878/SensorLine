@@ -55,6 +55,17 @@ class ToyDatasetTests(unittest.TestCase):
                 with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
                     make_toy_dataset(Path(folder) / "bad", **options)
 
+    def test_a_test_split_is_added_without_changing_train_and_val(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plain = make_toy_dataset(Path(folder) / "plain", train=6, val=3, seed=5)
+            tested = make_toy_dataset(Path(folder) / "tested", train=6, val=3, seed=5, test=4)
+            data = load_data_description(tested)
+            self.assertEqual(len(build_dataset(data, "test")), 4)
+            self.assertNotIn("test", load_data_description(plain))
+            for split in ("train", "val"):
+                for path in sorted((plain / split).rglob("*.*")):
+                    self.assertEqual(path.read_bytes(), (tested / split / path.relative_to(plain / split)).read_bytes())
+
     def test_quick_start_config_names_the_toy_dataset(self):
         config = load_config(ROOT / "configs" / "toy.yaml")
         self.assertEqual(Path(config["data"]["train"]), (ROOT / "toy_data" / "train").resolve())

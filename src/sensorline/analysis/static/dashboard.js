@@ -1,9 +1,8 @@
 /* Rendering only: tab changes reuse the saved report; matrices load on demand. */
 'use strict';
 const $ = id => document.getElementById(id);
-const workspaceSections = ['Inference', 'Experiments', 'Model'];
-const sections = [...workspaceSections, 'Overview', 'Samples', 'Sensors', 'Spatial', 'Objects',
-  'Foreground / Background', 'Train vs Val', 'Noise'];
+const dataPages = ['Overview', 'Samples', 'Sensors', 'Objects', 'Foreground / Background', 'Train vs Val',
+  'Noise'];
 let report = null,
   section = 'Overview',
   scope = 'train',
@@ -11,28 +10,26 @@ let report = null,
   sampleRequest = 0;
 let showBoxes = true;
 const colors = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)', 'var(--series-4)'];
-const sectionGroups = [
-  ['Workspace', workspaceSections],
-  ['Dataset analysis', sections.slice(workspaceSections.length)]
+/* The steps of the work, in the order they are taken. Each owns one or more pages (`pages`). A section file adds
+   its step with `steps.splice(...)` and its page drawer with `renderers[page] = ...`; the page needs no other change. */
+const steps = [
+  { key: 'Data', label: 'Data', hint: 'Look at a dataset', pages: dataPages },
+  { key: 'Inference', label: 'Inference', hint: 'Run a model on validation, test or new data', pages: ['Inference'] },
+  { key: 'Experiments', label: 'Experiments', hint: 'Compare and open finished runs', pages: ['Experiments'] },
+  { key: 'Model', label: 'Model', hint: 'Size, cost and speed of an architecture', pages: ['Model'] }
 ];
-const workspaceViews = { Inference: 'inference', Experiments: 'experiments', Model: 'model' };
+const stepOf = page => steps.find(step => step.pages.includes(page));
+const renderers = {};
+let lastDataPage = 'Overview';
 const sectionHints = {
   Overview: 'Size and composition of the selected population, and the overall signal level.',
   Samples: 'One recording at a time: the stored matrix, its boxes and its profiles.',
   Sensors: 'Level, spread and noise of each sensor.',
-  Spatial: 'How strongly neighbouring sensors move together.',
   Objects: 'Sizes, positions and overlaps of the annotated objects.',
   'Foreground / Background': 'Whether raw signal magnitude separates boxes from background.',
   'Train vs Val': 'Differences between the training and validation splits.',
   Noise: 'Noise estimates per sensor and per sample.'
 };
-const cssValue = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-
-function mixColor(from, to, amount) {
-  const channel = (hex, index) => parseInt(hex.slice(1 + index * 2, 3 + index * 2), 16);
-  return 'rgb(' + [0, 1, 2].map(index =>
-    Math.round(channel(from, index) + (channel(to, index) - channel(from, index)) * amount)).join(',') + ')';
-}
 const esc = value => String(value ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = value => value == null ? 'Unavailable'
@@ -40,10 +37,32 @@ const fmt = value => value == null ? 'Unavailable'
     ? Number.isInteger(value) ? String(value) : value.toLocaleString('en', { maximumFractionDigits: 3 })
     : esc(value);
 const num = value => typeof value === 'number' && Number.isFinite(value);
+/* A note is not printed: it is the tooltip of the title. */
 const card = (title, body, note = '') => `<section class="card">` +
-  `<h3>${esc(title)}</h3>${note ? `<p class="legend">${esc(note)}</p>` : ''}${body}</section>`;
+  `<h3${note ? ` title="${esc(note)}"` : ''}>${esc(title)}</h3>${body}</section>`;
+/* Small figures under a chart: the label above, the value below. */
+const statLine = (items, bare = false) => `<dl class="stats${bare ? ' bare' : ''}">${items.map(([label, value]) => `<div><dt>${esc(label)}</dt>` +
+  `<dd>${esc(value)}</dd></div>`).join('')}</dl>`;
+/* The top of every page: its name, one line on what it is for, and the actions that belong to it. */
+const pageHeader = (title, lead = '', actions = '') => `<header class="page-head"><div><h2>${esc(title)}</h2>` +
+  `${lead ? `<p class="lead">${esc(lead)}</p>` : ''}</div>${actions ? `<div class="page-actions">${actions}</div>` : ''}` +
+  `</header>`;
+/* Pages of one section; items are [key, label, count?]. The caller wires the clicks on [data-<attribute>]. */
+const tabStrip = (items, current, attribute, label) => `<div class="tabs" role="tablist" aria-label="${esc(label)}">` +
+  `${items.map(([key, text, count]) => `<button type="button" role="tab" data-${attribute}="${esc(key)}" ` +
+  `aria-selected="${key === current}">${esc(text)}${count != null ? `<span class="count">${esc(count)}</span>` : ''}` +
+  `</button>`).join('')}</div>`;
+/* A metric key of the runs as a person reads it. */
+const METRIC_NAMES = {
+  f1: 'F1', precision: 'Precision', recall: 'Recall', map50: 'mAP@50', map75: 'mAP@75', map50_95: 'mAP@50–95',
+  count_mae: 'Count MAE', count_rmse: 'Count RMSE', count_bias: 'Count bias', exact_count_accuracy: 'Exact-count frames',
+  loss_total: 'Loss', loss_bbox: 'Box loss', loss_objectness: 'Objectness loss', samples: 'Frames', objects: 'Objects',
+  tp: 'Found', fp: 'False alarms', fn: 'Missed', ignored_objects: 'Objects not counted (cut by the edge)'
+};
+const metricName = key => METRIC_NAMES[key] || String(key).replaceAll('_', ' ').replace(/^./, c => c.toUpperCase());
 
-function table(columns, rows, flagged = () => false) {
+/* `flat` shows every row; otherwise a long table scrolls inside its box with the header in view. */
+function table(columns, rows, flagged = () => false, flat = false) {
   // Numbers align right so digits line up; text and links stay left.
   const numeric = columns.map(column => {
     const values = rows.map(row => row[column[1]]).filter(value => value != null);
@@ -58,7 +77,7 @@ function table(columns, rows, flagged = () => false) {
         cell('td', index, column[2] ? column[2](row[column[1]], row) : fmt(row[column[1]]))).join('')}` +
       `</tr>`).join('') :
     `<tr><td class="no-rows" colspan="${columns.length}">Nothing to show</td></tr>`;
-  return `<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="scroll${flat ? ' flat' : ''}"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function empty(reason) {
@@ -203,45 +222,23 @@ function histogram(distribution, title, units = 'Stored pixel value', xPercent =
   }));
   return card(title,
     chart([{ name: 'Sample frequency', points }], units, 'Samples in bin', false, true, { xPercent, yPercent: true }) +
-    `<p class="legend">n=${fmt(distribution.count)}; quantile/histogram sample=${distribution.quantile_sample_size}` +
-    `; mean=${fmt(distribution.mean)}, median=${fmt(distribution.median)}, STD=${fmt(distribution.std)}</p>`);
-}
-
-function correlationHeatmap(values) {
-  const middle = cssValue('--diverging-middle'),
-    positive = cssValue('--diverging-positive'),
-    negative = cssValue('--diverging-negative');
-  // The matrix fills a 400-pixel square whatever the number of sensors.
-  const sensors = values.length,
-    cell = 400 / sensors;
-  const cells = values.flatMap((row, y) => row.map((value, x) => {
-    const color = value == null
-      ? 'var(--undefined)'
-      : mixColor(middle, value >= 0 ? positive : negative, Math.min(1, Math.abs(value)));
-    return `<rect x="${52 + x * cell}" y="${20 + y * cell}" width="${cell}" height="${cell}" style="fill:${color}` +
-      `" data-tip="Sensor ${x} / ${y}: r = ${fmt(value)}"/>`;
-  })).join('');
-  const ticks = [...new Set([0, 1, 2, 3].map(quarter => Math.round(quarter * sensors / 4)).concat(sensors - 1))]
-    .map(i => `<text x="${52 + i * cell + cell / 2}" y="440" text-anchor="middle">${i}</text>` +
-      `<text x="43" y="${20 + i * cell + 0.8 * cell}" text-anchor="end">${i}</text>`).join('');
-  return `<svg class="chart" viewBox="0 0 480 475" role="img" aria-label="Sensor Pearson correlation matrix">${cells}` +
-    `${ticks}<text x="260" y="465" text-anchor="middle">Sensor index</text>` +
-    `<text transform="translate(14 230) rotate(-90)" text-anchor="middle">Sensor index</text></svg>` +
-    `<div class="chart-legend"><span><i style="background:var(--diverging-negative)"></i>r = −1</span><span>` +
-    `<i style="background:var(--diverging-middle)"></i>r = 0</span><span>` +
-    `<i style="background:var(--diverging-positive)"></i>r = +1</span><span><i style="background:var(--undefined)">` +
-    `</i>undefined</span></div><p class="legend">Hover a cell for its Pearson r.</p>`;
+    statLine([['Values', fmt(distribution.count)], ['Mean', fmt(distribution.mean)],
+      ['Median', fmt(distribution.median)], ['Std. deviation', fmt(distribution.std)]]));
 }
 
 function setSection(name) {
   section = name;
-  document.body.dataset.view = workspaceViews[name] || 'dataset';
+  if (dataPages.includes(name)) lastDataPage = name;
+  document.body.dataset.view = dataPages.includes(name) ? 'dataset' : name.toLowerCase();
+  const current = stepOf(name)?.key;
   document.querySelectorAll('#nav button').forEach(button => {
-    const current = button.dataset.section === section;
-    button.classList.toggle('active', current);
-    if (current) button.setAttribute('aria-current', 'page');
+    const here = button.dataset.step === current;
+    button.classList.toggle('active', here);
+    if (here) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   });
+  document.querySelectorAll('#data-tabs button').forEach(button =>
+    button.setAttribute('aria-selected', String(button.dataset.section === name)));
   // The address keeps the open section, so reload and links return to it.
   const hash = '#' + encodeURIComponent(name);
   if (location.hash !== hash) history.replaceState(null, '', hash);
@@ -249,22 +246,31 @@ function setSection(name) {
 }
 
 function sectionFromAddress() {
-  // A suffix after '/' belongs to the section itself and is ignored here.
+  // A suffix after '/' belongs to the section itself, for example '#Training/optuna' (what follows belongs to that section).
   const name = decodeURIComponent(location.hash.slice(1)).split('/')[0];
-  return sections.includes(name) ? name : 'Overview';
+  if (name === 'Data') return lastDataPage;
+  return steps.some(step => step.pages.includes(name)) ? name : 'Overview';
 }
-sectionGroups.forEach(([title, names]) => {
-  const heading = document.createElement('p');
-  heading.className = 'nav-title';
-  heading.textContent = title;
-  $('nav').append(heading);
-  names.forEach(name => {
+function buildNav() {
+  steps.forEach(step => {
     const button = document.createElement('button');
-    button.textContent = name;
-    button.dataset.section = name;
-    button.onclick = () => setSection(name);
+    button.className = 'step';
+    button.dataset.step = step.key;
+    button.innerHTML = `<b>${esc(step.label)}</b><small>${esc(step.hint)}</small>`;
+    // The Data step opens the page that was open last.
+    button.onclick = () => setSection(step.key === 'Data' ? lastDataPage : step.pages[0]);
     $('nav').append(button);
   });
+}
+dataPages.forEach(name => {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.setAttribute('role', 'tab');
+  button.textContent = name;
+  button.title = sectionHints[name];
+  button.dataset.section = name;
+  button.onclick = () => setSection(name);
+  $('data-tabs').append(button);
 });
 window.addEventListener('hashchange', () => {
   const name = sectionFromAddress();
@@ -302,7 +308,7 @@ async function poll() {
   try {
     const status = await request('/api/status');
     $('status').textContent = status.message + (status.error ? ` · ${status.error}` : '') + (report ? ` · ` +
-      `${new Date(report.generated_at).toLocaleString()} · stored pixel units` : '');
+      `${new Date(report.generated_at).toLocaleString()} · values in stored pixel units` : '');
     $('run').disabled = $('refresh').disabled = status.running;
     $('status').parentElement.dataset.state =
       status.running ? 'running' : status.error ? 'error' : status.available ? 'ready' : 'idle';
@@ -311,9 +317,13 @@ async function poll() {
       report = await request('/api/analysis');
       render();
     }
+    $('offline').hidden = true;
   } catch (error) {
     $('status').textContent = `Connection error: ${error.message}`;
     $('status').parentElement.dataset.state = 'error';
+    $('offline').textContent = 'The dashboard server is not answering. Check the console where dashboard.py was ' +
+      'started: if it has stopped, start it again and reload this page.';
+    $('offline').hidden = false;
   }
 }
 
@@ -346,8 +356,7 @@ async function gallery(rows) {
       node.append(canvas);
       const button = document.createElement('button');
       button.className = 'thumb-button';
-      button.textContent = `${row.split} / ${row.id} · ${row.object_count} objects · display ${sample.min}..` +
-        `${sample.max}`;
+      button.textContent = `${row.id} · ${row.object_count} object${row.object_count === 1 ? '' : 's'}`;
       button.onclick = () => openSample(row.split, row.id);
       node.append(button);
       container.append(node);
@@ -395,42 +404,34 @@ function renderOverview(result) {
   ];
   let html = `<div class="metrics">${cards.map(([label, value]) => `<div class="metric">` +
     `<strong>${fmt(value)}</strong><span>${esc(label)}</span></div>`).join('')}</div>`;
-  html += `<p>Population: ${esc(scope)}. Dimensions [sensor, time]: ${esc(JSON.stringify(o.shapes_sensor_time))}. ` +
-    `${report.issues.length} input issues excluded or reported. Values are stored pixels, not physical distance.</p>`;
   html += `<div class="grid">${histogram(s, 'Signal values')}` +
     `${histogram(result.distributions.object_count, 'Objects per sample', 'Objects')}`;
-  html += card('Signal summary', table([
-      ['Statistic', 'name'],
-      ['Value', 'value']
-    ], ['min', 'max', 'mean', 'median', 'std', 'dynamic_range'].map(name => ({ name, value: s[name] }))) +
-    table([
-      ['Percentile', 'name'],
-      ['Value', 'value']
-    ], Object.entries(s.percentiles).map(([name, value]) => ({ name: `p${name}`, value }))));
+  const label = { std: 'Std. deviation', dynamic_range: 'Dynamic range' };
+  html += card('Signal summary', statLine(['min', 'max', 'mean', 'median', 'std', 'dynamic_range']
+      .map(name => [label[name] || metricName(name), fmt(s[name])]), true) +
+    `<h4 style="margin:22px 0 10px">Percentiles</h4>` + statLine(Object.entries(s.percentiles)
+      .filter(([name]) => ['1', '5', '25', '50', '75', '95', '99'].includes(name))
+      .map(([name, value]) => [`${name}th`, fmt(value)]), true));
+  const duplicates = report.duplicates;
   html += card('Data coverage', table([
     ['Split', 'split'],
-    ['Inventory', 'inventory'],
-    ['Valid', 'valid'],
+    ['Frames', 'valid'],
     ['Empty', 'empty'],
     ['Objects', 'objects']
   ], ['train', 'val'].map(split => ({
-    split,
-    inventory: report.provenance.inventory[split],
+    split: split === 'val' ? 'validation' : split,
     valid: report.splits[split].overview.samples,
     empty: report.splits[split].overview.empty_samples,
     objects: report.splits[split].overview.objects
-  }))));
-  html += '</div>' + card('Random sample gallery', '<div class="gallery" id="sample-gallery"></div>',
-    'Original image axes from configuration; green = YOLO boxes. Open a sample for physical-axis profiles.');
-  html += card('Source issues and duplicate audit', table([
-      ['Split', 'split'],
-      ['Input', 'id'],
-      ['Issue', 'reason']
-    ], report.issues) +
-    `<p>Within-split duplicate excess: train=${report.duplicates.within_split_counts.train}, val=` +
-    `${report.duplicates.within_split_counts.val}. Cross-split identical signal groups=` +
-    `${report.duplicates.cross_split.length}.</p><details><summary>Duplicate sample identifiers</summary>` +
-    `<pre>${esc(JSON.stringify(report.duplicates.cross_split, null, 2))}</pre></details>`);
+  })), () => false, true) + statLine([['Input issues', report.issues.length],
+    ['Repeated frames in train', duplicates.within_split_counts.train],
+    ['Repeated in validation', duplicates.within_split_counts.val],
+    ['Identical in both', duplicates.cross_split.length]]));
+  html += '</div>' + card('Random sample gallery', '<div class="gallery" id="sample-gallery"></div>');
+  if (report.issues.length || duplicates.cross_split.length) html += card('Input issues and identical frames',
+    (report.issues.length ? table([['Split', 'split'], ['Input', 'id'], ['Issue', 'reason']], report.issues,
+      () => false, true) : '') + (duplicates.cross_split.length ? `<details class="plain"><summary>Identical frames, ` +
+    `by name</summary><pre>${esc(JSON.stringify(duplicates.cross_split, null, 2))}</pre></details>` : ''));
   return html;
 }
 
@@ -452,8 +453,8 @@ function renderSamples(result) {
   }
   selectedSample = { split: rows[index].split, id: rows[index].id };
   return `<div class="controls"><button id="sample-prev">← Previous</button>` +
-    `<label>Sample <select id="sample-select">${rows.map((row, i) => `<option value="${i}" ` +
-    `${i === index ? 'selected' : ''}>${esc(row.split + ' / ' + row.id)}</option>`).join('')}</select></label>` +
+    `<select id="sample-select" aria-label="Sample">${rows.map((row, i) => `<option value="${i}" ` +
+    `${i === index ? 'selected' : ''}>${esc(row.split + ' / ' + row.id)}</option>`).join('')}</select>` +
     `<button id="sample-next">Next →</button><label><input id="boxes" type="checkbox" ${showBoxes ? 'checked' : ''}` +
     `> YOLO boxes</label></div><div id="sample-details">Loading matrix…</div>`;
 }
@@ -465,18 +466,8 @@ async function loadSample() {
   try {
     const sample = await request(`/api/sample?split=${selected.split}&id=${encodeURIComponent(selected.id)}`);
     if (token !== sampleRequest || !target.isConnected) return;
-    const x = sample.sensor_axis === 'x' ? 'Sensor index' : 'Time step',
-      y = sample.sensor_axis === 'x' ? 'Time step' : 'Sensor index';
-    target.innerHTML = `<p>${esc(sample.id)} · ${sample.matrix.length} rows × ${sample.matrix[0].length} columns` +
-      ` · ${sample.boxes_image_xyxy.length} objects</p><div class="grid">` +
-      `${card('Original matrix', `<div class="matrix-panel">` +
-      `<p>X → ${x} (left to right); Y ↓ ${y} (top to bottom), zero-based cell centers.</p>` +
-      `<canvas id="matrix" class="heatmap" aria-label="Original sensor matrix"></canvas>` +
-      `<p>Per-sample display range: black=${fmt(sample.min)}, white=${fmt(sample.max)}` +
-      ` stored pixels. No smoothing.</p><label>Cell column <input id="cell-x" type="number" min="0" max="` +
-      `${sample.matrix[0].length - 1}" value="0"></label> <label>row <input id="cell-y" type="number" min="0" max="` +
-      `${sample.matrix.length - 1}" value="0"></label><p id="cell-value"></p><p id="hover-value" aria-live="polite">` +
-      `</p></div>`)}
+    target.innerHTML = `<div class="grid three">` +
+      `${card('Original matrix', `<canvas id="matrix" class="heatmap" aria-label="Original sensor matrix"></canvas>`)}
       ${card('Profiles across sensors', chart([
         { name: 'Mean', points: sample.profiles.sensor_mean.map((v, i) => ({ x: i, y: v })) },
         { name: 'Max', points: sample.profiles.sensor_max.map((v, i) => ({ x: i, y: v })) }
@@ -487,21 +478,6 @@ async function loadSample() {
       ], 'Time step', 'Stored pixel value'))}</div>`;
     const canvas = $('matrix');
     paintMatrix(canvas, sample, showBoxes);
-    const updateCell = () => {
-      const x = Number($('cell-x').value),
-        y = Number($('cell-y').value);
-      $('cell-value').textContent = sample.matrix[y]?.[x] === undefined ? 'Outside matrix' : `Cell [row=${y}, column=` +
-        `${x}]: ${sample.matrix[y][x]} stored pixels`;
-    };
-    $('cell-x').oninput = $('cell-y').oninput = updateCell;
-    updateCell();
-    canvas.onmousemove = event => {
-      const rect = canvas.getBoundingClientRect();
-      const x = Math.floor((event.clientX - rect.left) / rect.width * sample.matrix[0].length),
-        y = Math.floor((event.clientY - rect.top) / rect.height * sample.matrix.length);
-      $('hover-value').textContent = sample.matrix[y]?.[x] === undefined ? '' : `Hover [${y}, ${x}] = ` +
-        `${sample.matrix[y][x]}`;
-    };
     $('boxes').onchange = () => {
       showBoxes = $('boxes').checked;
       paintMatrix(canvas, sample, showBoxes);
@@ -544,23 +520,31 @@ function renderSensors(result) {
     'Flags use |robust score| >3.5 against sensor peers; they do not establish hardware failure.');
 }
 
+const OBJECT_PLOTS = {
+  sensor_width: 'Object width, in sensors', temporal_length: 'Object length, in time steps',
+  sensor_center: 'Object position along the sensors', time_center: 'Object position along time',
+  boundary_distance: 'Distance of an object to the frame edge', pair_iou: 'Overlap of neighbouring objects (IoU)',
+  nearest_center_distance: 'Distance to the nearest object'
+};
+
 function renderObjects(result) {
   const o = result.objects;
   const rows = result.samples;
   const sparse = [...rows].sort((a, b) => a.object_count - b.object_count).slice(0, 2);
   const dense = [...rows].sort((a, b) => b.object_count - a.object_count).slice(0, 2);
   const overlaps = [...rows].sort((a, b) => b.max_iou - a.max_iou).filter(row => row.max_iou > 0).slice(0, 2);
-  return `<p>Empty=${fmt(result.overview.empty_fraction)}; multiple objects=` +
-    `${fmt(result.overview.multiple_object_fraction)}; overlapping pairs=${o.overlapping_pairs}/${o.pair_count}. ` +
-    `${o.samples_with_overlap} samples have bbox overlap.</p><div class="grid">` +
-    card('Object width vs temporal length', chart([{
+  return `<div class="metrics">${tile('Empty frames', percentText(result.overview.empty_fraction))}` +
+    `${tile('Frames with several objects', percentText(result.overview.multiple_object_fraction))}` +
+    `${tile('Overlapping pairs', `${o.overlapping_pairs} of ${o.pair_count}`)}` +
+    `${tile('Frames with overlapping boxes', String(o.samples_with_overlap))}</div><div class="grid">` +
+    card('Object width and length', chart([{
       name: 'Annotated objects',
       points: o.scatter.map(row => ({ x: row.sensor_width, y: row.temporal_length, label: row.split + ' / ' + row.id }))
     }], 'Sensor width (cells)', 'Temporal length (steps)', true),
-      `Plot shows ${o.scatter.length} of ${o.scatter_population} boxes; bounded uniform sample.`) +
+      o.scatter.length < o.scatter_population ? `Shows ${o.scatter.length} of ${o.scatter_population} objects.` : '') +
     ['sensor_width', 'temporal_length', 'sensor_center', 'time_center', 'boundary_distance', 'pair_iou',
       'nearest_center_distance'
-    ].map(name => histogram(result.distributions[name], name.replaceAll('_', ' '),
+    ].map(name => histogram(result.distributions[name], OBJECT_PLOTS[name],
       name === 'pair_iou' ? 'Dimensionless' : 'Cells / steps', name === 'pair_iou')).join('') +
     '</div>' + card('Object extent percentiles', table([
       ['Axis', 'axis'],
@@ -587,25 +571,22 @@ function renderForeground(result) {
       name, points: h[name].map((value, i) => ({ x: (h.edges[i] + h.edges[i + 1]) / 2, y: value }))
     })), 'Stored pixel value', 'Samples in bin', false, false, { yPercent: true })
     : empty('Both foreground and background values are required.');
-  return `<p>Foreground is approximately the union of annotated boxes and includes background pixels. This ` +
-    `comparison diagnoses raw magnitude; it is not detector performance.</p>` +
-    `<div class="grid">${card('Foreground vs background', plot)}${histogram(f.foreground, 'Foreground values')}` +
+  return `<div class="grid">${card('Foreground vs background', plot)}${histogram(f.foreground, 'Foreground values')}` +
     `${histogram(f.background, 'Background values')}` +
     `${card('Separation diagnostics',
       table([['Metric', 'name'], ['Value', 'value']], ['mean_difference', 'median_difference',
         'standardized_effect_size', 'histogram_overlap', 'wasserstein', 'ks', 'magnitude_auc'
-      ].map(name => ({ name, value: separation[name] }))),
+      ].map(name => ({ name: { ks: 'KS statistic', magnitude_auc: 'Magnitude AUC' }[name] || metricName(name), value: separation[name] })), () => false, true),
       'Mean differences are foreground − background. Effect size divides that difference by pooled STD. ' +
       'Magnitude AUC treats brighter pixels as foreground (below 0.5 means darker foreground). ' +
       'Histogram overlap depends on bins; both distributions use bounded pixel samples.')}` +
-    `</div>`;
+    `</div>` +
+''
 }
 
 function renderDrift() {
   const rows = report.drift.rows;
-  return `<p>Train and validation remain fixed regardless of the population selector. Highlight = KS ≥0.25 or ` +
-    `|normalized mean difference| ≥0.5. These are descriptive screening thresholds. Sample features use each frame ` +
-    `once; bbox/sensor distribution distances use bounded samples.</p><div class="grid">` +
+  return `<div class="grid">` +
     card('Sensor mean distributions by split', chart(['train', 'val'].map(name => ({
       name, points: report.splits[name].sensors.map(row => ({ x: row.sensor, y: row.mean }))
     })), 'Sensor index', 'Stored pixel mean')) +
@@ -622,12 +603,13 @@ function renderDrift() {
       ['Normalized mean delta', 'normalized_mean_difference']
     ], rows, row => row.large_difference),
     'Mean delta = val − train, divided by sqrt((train variance + val variance)/2). ' +
-    'Null means unavailable or a nonzero delta with zero pooled variance.');
+    'Null means unavailable or a nonzero delta with zero pooled variance.') +
+''
 }
 
 function renderNoise(result) {
   const ranked = [...result.sensors].sort((a, b) => (b.noise ?? -1) - (a.noise ?? -1));
-  return `<p>Noise estimates respond to true object edges as well as noise.</p><div class="grid">` +
+  return `<div class="grid">` +
     card('Noise across physical sensors',
       line(result.sensors.map(row => row.noise), 'Second-difference MAD', 'Sensor index', 'Stored pixel scale')) +
     histogram(result.distributions.noise, 'Per-sample noise scale', 'Stored pixel scale') + '</div>' +
@@ -641,53 +623,26 @@ function renderNoise(result) {
 
 function render() {
   ++sampleRequest;
-  if ((section === 'Inference' || section === 'Model')
-    && (typeof renderInference !== 'function' || typeof renderModel !== 'function')) {
-    // The page files are read from disk on every request, the server code is not:
-    // an older dashboard process still answering here cannot serve these sections.
-    $('content').innerHTML = `<h2>${esc(section)}</h2>` +
-      `<p class="empty">This section could not be loaded: the dashboard process answering on this address is older ` +
-      `than the page. Stop every running dashboard and start it again.</p>`;
-    return;
-  }
-  if (section === 'Inference') {
-    renderInference();
-    return;
-  }
-  if (section === 'Experiments') {
-    renderExperiments();
-    return;
-  }
-  if (section === 'Model') {
-    renderModel();
+  if (renderers[section]) {
+    renderers[section]();
     return;
   }
   if (!report) {
-    $('content').innerHTML = `<h2>${esc(section)}</h2>` +
-      `<p class="empty">No analysis result yet. It appears here when the current run finishes; use <strong>Run ` +
+    $('content').innerHTML = `<p class="empty">No analysis result yet. It appears here when the current run finishes; use <strong>Run ` +
       `analysis</strong> above to start one.</p>`;
     return;
   }
   const result = report.splits[scope];
-  const renderers = {
+  const dataRenderers = {
     Overview: renderOverview,
     Samples: renderSamples,
     Sensors: renderSensors,
-    Spatial: r => `<div class="grid">` +
-      `${card('Sensor correlation matrix', correlationHeatmap(r.spatial.correlation_matrix))}` +
-      `${card('Correlation vs sensor distance',
-        line(r.spatial.correlation_vs_distance, 'Mean Pearson r', 'Sensor distance', 'Correlation'))}` +
-      `</div><p>Pooled Pearson correlation across all time columns. Mean excludes constant sensors. ` +
-      `Correlation length=${fmt(r.spatial.correlation_length)} sensors (first 1/e crossing); null is undefined ` +
-      `or right-censored. Shared background can contribute to correlation; this is receptive-field evidence, ` +
-      `not an exact kernel size.</p>`,
     Objects: renderObjects,
     'Foreground / Background': renderForeground,
     'Train vs Val': renderDrift,
     Noise: renderNoise
   };
-  $('content').innerHTML = `<h2>${esc(section)}</h2><p class="section-hint">${esc(sectionHints[section])}` +
-    `</p>` + renderers[section](result);
+  $('content').innerHTML = dataRenderers[section](result);
   bindInspect();
   if (section === 'Overview') {
     // Reproducible gallery permutation; no expensive analysis here.
@@ -742,8 +697,20 @@ document.addEventListener('mousemove', event => {
   tip.style.left = Math.min(window.innerWidth - box.width - 8, event.clientX + 14) + 'px';
   tip.style.top = Math.max(8, event.clientY - box.height - 12) + 'px';
 });
+/* Where "auto" runs: the GPU's name, or the CPU. */
+async function showDevice() {
+  try {
+    const options = await request('/api/model/options');
+    $('device-chip').textContent = options.device;
+    $('device-chip').title = options.cuda ? 'The GPU used when a device is set to auto' :
+      'No CUDA device found: everything runs on the CPU';
+    $('device-chip').hidden = false;
+  } catch (error) { /* the connection banner reports a lost server */ }
+}
 // Deferred scripts have all run by now, so every section renderer exists.
 document.addEventListener('DOMContentLoaded', () => {
+  buildNav();
+  showDevice();
   setSection(sectionFromAddress());
   poll();
   setInterval(poll, 2000);

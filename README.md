@@ -5,11 +5,11 @@ bounding-box detector. Architectures are assembled from YAML, trained under
 identical conditions, tuned with Optuna, fine-tuned on new data with a guard
 against forgetting, and compared by counting and detection quality.
 
-![Dashboard, Inference section: counts, per-frame agreement, threshold sweep and detected boxes](docs/images/dashboard-inference.png)
+![Dashboard, Inference: a checkpoint run on the test split, with counts, found, missed and false objects](docs/images/dashboard-inference.png)
 
-*The local dashboard after running a checkpoint on the synthetic quick-start
-dataset: counts, frames with the exact count, a confidence sweep and every
-frame with its labeled and detected objects.*
+*The local dashboard after running a checkpoint on the test split of the
+synthetic quick-start dataset. The result has three tabs: the summary, the effect
+of the confidence threshold, and every frame with its labeled and detected objects.*
 
 ## The problem
 
@@ -57,7 +57,8 @@ attention, a pyramid or a decoupled head; the added complexity does not pay off.
 How far to trust the numbers:
 
 - they come from the validation set that also selected the best of 40 trials,
-  so they are optimistic; there is no independent test set yet;
+  so they are optimistic; these runs had no test split (the code supports one,
+  see below);
 - 2 validation frames are identical to training frames (reported in
   `data_audit.json` of every run);
 - the data are not public; the synthetic dataset below reproduces their format,
@@ -110,14 +111,18 @@ python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -e ".[optuna]"
 
-python tools/make_toy_data.py        # toy_data/: 300 training and 80 validation frames
+python tools/make_toy_data.py        # toy_data/: 300 training, 80 validation and 80 test frames
 python train.py --config configs/toy.yaml        # about a minute on CPU, seconds on a GPU
-python test.py --config configs/toy.yaml --checkpoint runs/toy/best.pt
+python test.py --config configs/toy.yaml --checkpoint runs/toy/best.pt --split test
 python dashboard.py --config configs/toy.yaml     # opens the dashboard in the browser
 ```
 
-The toy model reaches F1 ≈ 0.998 on its validation set: the synthetic blobs
-are easier than real objects; the point is to see the whole pipeline work.
+The toy model reaches F1 ≈ 0.99 on its validation and test sets: the synthetic blobs
+are easier than real objects; the point is to see the whole pipeline work. In the
+dashboard, open Inference, choose Test and run it.
+
+The dashboard needs no other files: it reads the runs under `runs/` and the data
+named by the YAML. Every page of it is described in [docs/guide.md](docs/guide.md#dashboard).
 
 ## What is in the project
 
@@ -130,8 +135,13 @@ are easier than real objects; the point is to see the whole pipeline work.
 - **Reproducible training.** Seeds and deterministic algorithms make a run
   repeat bit for bit on the same device. The checkpoint stores the config and
   fingerprints of the training and validation data, and every run reports
-  identical frames shared by train and val. The best epoch is chosen on
+  identical frames shared by the splits. The best epoch is chosen on
   validation: count MAE, then mAP50, then loss.
+- **A test split that decides nothing.** When the YAML names a `test` folder,
+  training evaluates it after every epoch and reports it next to validation
+  (`test_*` columns, `test_metrics.json`). It never chooses the epoch, an Optuna
+  trial or a parameter, and training is bit for bit the same with and without it.
+  `test.py --split test` and the dashboard run a checkpoint on it later.
 - **Hyperparameter search.** `--optuna` runs a validation-only search over
   training, loss, augmentation and threshold parameters (never the
   architecture); a search can be resumed, and refuses to if the data or the
@@ -142,11 +152,17 @@ are easier than real objects; the point is to see the whole pipeline work.
   original validation set stay within set limits (see the check below).
 - **One evaluation.** `test.py` and the dashboard run the same code, so the
   same data give the same metrics, predictions and report.
-- **A local dashboard** (`python dashboard.py --config <model YAML>`): dataset statistics
-  (sensors, noise, correlation, object sizes, train/val drift, duplicates),
-  inference with a per-frame gallery of found, missed and false detections,
-  the list of runs, and model size, MACs and measured speed. Training stays
-  on the command line. It uses only the standard library on the server side.
+- **A local dashboard** (`python dashboard.py --config <model YAML>`) with four
+  steps. *Data*: statistics of a dataset (sensors, noise, object sizes, train/val
+  drift, duplicates). *Inference*: a checkpoint on its validation, **test** or
+  training split or on any folder, with the counts, a found / missed / false bar,
+  the effect of the confidence threshold and every frame with its boxes.
+  *Experiments*: the runs side by side with validation and test metrics, and one
+  run opened into its results, curves and architecture. *Model*: size, MACs,
+  receptive field and measured speed. Training stays on the command line. The
+  server side uses only the standard library.
+
+![Dashboard, Experiments: the curves of a run, with its test split](docs/images/dashboard-experiments.png)
 
 ## Counting in a long recording
 
@@ -190,8 +206,10 @@ python train.py --config configs/theory_00_control.yaml \
 python train.py --config configs/theory_00_control.yaml --finetune runs/control_tuned/best.pt \
     --data path/to/new_dataset --epochs 20 --output-dir runs/control_finetuned
 
-# Evaluate on validation, on an independent labeled folder, or predict for unlabeled frames
+# Evaluate on validation, on the test split of the YAML (or any labeled folder), or predict for
+# unlabeled frames
 python test.py --config configs/theory_00_control.yaml --checkpoint runs/control_tuned/best.pt
+python test.py --config configs/theory_00_control.yaml --checkpoint runs/control_tuned/best.pt --split test
 python test.py --config configs/theory_00_control.yaml --checkpoint runs/control_tuned/best.pt \
     --split test --data-dir path/to/test
 python test.py --config configs/theory_00_control.yaml --checkpoint runs/control_tuned/best.pt \
@@ -237,6 +255,7 @@ runs/<run>/
   metrics.json                   metrics of the best checkpoint on validation
   validation_samples.csv         counts and TP/FP/FN per frame
   validation_predictions.json    boxes and confidences
+  test_metrics.json, test_samples.csv   the same on the test split, when the YAML has one
   summary.json                   run state, read by the dashboard
   finetune.json                  fine-tuning only: base checkpoint, limits, outcome
 ```
@@ -255,7 +274,7 @@ src/sensorline/          the core: data, models/, losses, trainer, evaluation, i
                          finetune, optuna_search, config; it does not import analysis/
 src/sensorline/tracking/ windows, detector, tracker and the counting page
 src/sensorline/analysis/ the dashboard and the dataset statistics on top of the core
-tests/                   data, model, metrics, train.py end to end, dashboard requests
+tests/                   data, model, metrics, train.py end to end, the test split, dashboard requests
 docs/                    the guide and images
 ```
 
@@ -274,7 +293,7 @@ CPU build of PyTorch.
 
 - One data source (grayscale images with YOLO labels) and one class; all
   frames of a dataset have the same number of sensors (`data.sensors`).
-- No independent test set; published numbers are validation numbers.
+- The published numbers are validation numbers; there is no public test set.
 - The dashboard is a single-user local tool and listens on 127.0.0.1 only.
 
 ## License
